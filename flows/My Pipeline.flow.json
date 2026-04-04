@@ -1,0 +1,82 @@
+{
+  "name": "My Pipeline",
+  "version": 1,
+  "created_at": "2026-03-15T09:24:44.008Z",
+  "blocks": [
+    {
+      "type": "comfyGen",
+      "config": {
+        "workflow": "{\n  \"1\": {\n    \"inputs\": {\n      \"ckpt_name\": \"betterDaysIllustriousXL_illuXLV0341Unstable.safetensors\"\n    },\n    \"class_type\": \"CheckpointLoaderSimple\",\n    \"_meta\": {\"title\": \"Load Checkpoint\"}\n  },\n  \"2\": {\n    \"inputs\": {\n      \"lora_name\": \"kms_in_the_dark_IL.safetensors\",\n      \"strength_model\": 0.75,\n      \"strength_clip\": 0.75,\n      \"model\": [\"1\", 0],\n      \"clip\": [\"1\", 1]\n    },\n    \"class_type\": \"LoraLoader\",\n    \"_meta\": {\"title\": \"Load LoRA\"}\n  },\n  \"3\": {\n    \"inputs\": {\n      \"text\": \"1girl, solo, dark background, low light, volumetric lighting, cinematic, dramatic lighting, glistening skin, sharp focus, masterpiece, best quality, aesthetic, physically-based rendering, detailed face, detailed eyes, looking at viewer\",\n      \"clip\": [\"2\", 1]\n    },\n    \"class_type\": \"CLIPTextEncode\",\n    \"_meta\": {\"title\": \"Positive Prompt\"}\n  },\n  \"4\": {\n    \"inputs\": {\n      \"text\": \"worst quality, low quality, blurry, deformed, ugly, bad anatomy, bad hands, extra fingers, missing fingers\",\n      \"clip\": [\"2\", 1]\n    },\n    \"class_type\": \"CLIPTextEncode\",\n    \"_meta\": {\"title\": \"Negative Prompt\"}\n  },\n  \"5\": {\n    \"inputs\": {\n      \"vae_name\": \"sdxl_vae.safetensors\"\n    },\n    \"class_type\": \"VAELoader\",\n    \"_meta\": {\"title\": \"Load VAE\"}\n  },\n  \"6\": {\n    \"inputs\": {\n      \"width\": 832,\n      \"height\": 1216,\n      \"batch_size\": 1\n    },\n    \"class_type\": \"EmptyLatentImage\",\n    \"_meta\": {\"title\": \"Empty Latent Image\"}\n  },\n  \"7\": {\n    \"inputs\": {\n      \"seed\": 0,\n      \"steps\": 30,\n      \"cfg\": 5.0,\n      \"sampler_name\": \"euler_ancestral\",\n      \"scheduler\": \"beta\",\n      \"denoise\": 1.0,\n      \"model\": [\"2\", 0],\n      \"positive\": [\"3\", 0],\n      \"negative\": [\"4\", 0],\n      \"latent_image\": [\"6\", 0]\n    },\n    \"class_type\": \"KSampler\",\n    \"_meta\": {\"title\": \"KSampler\"}\n  },\n  \"8\": {\n    \"inputs\": {\n      \"samples\": [\"7\", 0],\n      \"vae\": [\"5\", 0]\n    },\n    \"class_type\": \"VAEDecode\",\n    \"_meta\": {\"title\": \"VAE Decode\"}\n  },\n  \"9\": {\n    \"inputs\": {\n      \"model_name\": \"4x-UltraSharpV2_Lite.safetensors\"\n    },\n    \"class_type\": \"UpscaleModelLoader\",\n    \"_meta\": {\"title\": \"Load Upscale Model\"}\n  },\n  \"10\": {\n    \"inputs\": {\n      \"upscale_model\": [\"9\", 0],\n      \"image\": [\"8\", 0]\n    },\n    \"class_type\": \"ImageUpscaleWithModel\",\n    \"_meta\": {\"title\": \"Upscale 4x\"}\n  },\n  \"11\": {\n    \"inputs\": {\n      \"upscale_method\": \"area\",\n      \"width\": 1664,\n      \"height\": 2432,\n      \"crop\": \"disabled\",\n      \"image\": [\"10\", 0]\n    },\n    \"class_type\": \"ImageScale\",\n    \"_meta\": {\"title\": \"Scale to 2x\"}\n  },\n  \"12\": {\n    \"inputs\": {\n      \"filename_prefix\": \"ComfyGen\",\n      \"images\": [\"11\", 0]\n    },\n    \"class_type\": \"SaveImage\",\n    \"_meta\": {\"title\": \"Save Image\"}\n  }\n}\n",
+        "workflow_name": "workflow_simple.json",
+        "load_nodes": [],
+        "mappings": [],
+        "ksamplers": [
+          {
+            "node_id": "7",
+            "class_type": "KSampler",
+            "steps": 30,
+            "cfg": 5,
+            "seed": 0,
+            "denoise": 1
+          }
+        ],
+        "ksampler_overrides": {
+          "7": {
+            "steps": "30",
+            "cfg": "5",
+            "denoise": "1"
+          }
+        },
+        "text_overrides": [
+          {
+            "node_id": "3",
+            "input_name": "text",
+            "current_value": "1girl, solo, dark background, low light, volumetric lighting, cinematic, dramatic lighting, glistening skin, sharp focus, masterpiece, best quality, aesthetic, physically-based rendering, detailed face, detailed eyes, looking at viewer",
+            "label": "Positive Prompt"
+          }
+        ],
+        "text_values": {
+          "3.text": "nami from onepiece, nude, porn"
+        },
+        "text_upstream": {},
+        "resolution_nodes": [
+          {
+            "node_id": "6",
+            "class_type": "EmptyLatentImage",
+            "label": "Empty Latent Image",
+            "category": "latent",
+            "width": 832,
+            "height": 1216
+          },
+          {
+            "node_id": "11",
+            "class_type": "ImageScale",
+            "label": "Scale to 2x",
+            "category": "other",
+            "width": 1664,
+            "height": 2432
+          }
+        ],
+        "resolution_overrides": {
+          "6": {
+            "width": "832",
+            "height": "1216"
+          },
+          "11": {
+            "width": "1664",
+            "height": "2432"
+          }
+        },
+        "frame_counts": [],
+        "frame_overrides": {},
+        "ref_video": [],
+        "ref_video_overrides": {},
+        "output_type": "image",
+        "lock_seed": false
+      }
+    },
+    {
+      "type": "imageViewer"
+    }
+  ]
+}

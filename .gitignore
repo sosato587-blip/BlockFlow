@@ -12,8 +12,8 @@ job_history.json
 output/
 prompt_writer_settings.json
 
-# Flow data (gitignored, personal pipelines)
-flows/*.flow.json
+# Flow data (tracked for multi-machine sync)
+# flows/*.flow.json
 
 # Dev artifacts
 architecture.md
