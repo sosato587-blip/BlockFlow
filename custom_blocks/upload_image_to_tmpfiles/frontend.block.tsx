@@ -21,7 +21,7 @@ async function uploadImageFile(file: File, mode: UploadMode) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/octet-stream',
-      'X-Filename': file.name,
+      'X-Filename': encodeURIComponent(file.name),
       'X-Content-Type': file.type || 'application/octet-stream',
     },
     body: await file.arrayBuffer(),

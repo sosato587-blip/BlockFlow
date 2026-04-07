@@ -37,7 +37,7 @@ def main() -> None:
     # Ensure frontend deps are installed
     if not (FRONTEND_DIR / "node_modules").exists():
         print("[app] Installing frontend dependencies...")
-        subprocess.run(["npm", "install"], cwd=str(FRONTEND_DIR), check=True)
+        subprocess.run(["npm.cmd", "install"], cwd=str(FRONTEND_DIR), check=True)
 
     procs: list[subprocess.Popen] = []
 

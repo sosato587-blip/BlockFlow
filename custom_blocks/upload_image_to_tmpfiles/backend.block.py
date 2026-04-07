@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -20,7 +21,7 @@ TMPFILES_UPLOAD_URL = "https://tmpfiles.org/api/v1/upload"
 async def save_local(request: Request) -> JSONResponse:
     """Save uploaded image to local /outputs directory."""
     body = await request.body()
-    filename = request.headers.get("X-Filename", "image.png")
+    filename = urllib.parse.unquote(request.headers.get("X-Filename", "image.png"))
 
     if not body:
         return JSONResponse({"ok": False, "error": "empty body"}, status_code=400)
@@ -40,7 +41,7 @@ async def save_local(request: Request) -> JSONResponse:
 @router.post("/upload")
 async def upload(request: Request) -> JSONResponse:
     body = await request.body()
-    filename = request.headers.get("X-Filename", "image.png")
+    filename = urllib.parse.unquote(request.headers.get("X-Filename", "image.png"))
     content_type = request.headers.get("X-Content-Type", "image/png")
 
     if not body:
