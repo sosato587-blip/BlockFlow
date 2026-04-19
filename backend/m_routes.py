@@ -1768,7 +1768,7 @@ async def m_controlnet_dl_info() -> JSONResponse:
                 "size_mb": 2500,
                 "source_url": "https://huggingface.co/diffusers/controlnet-canny-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors",
                 "description": "Official ControlNet Canny for SDXL (works with Illustrious).",
-                "dl_cmd_pwsh": '$b = @{ input = @{ command = "download"; downloads = @(@{ url = "https://huggingface.co/diffusers/controlnet-canny-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors"; dest = "controlnet"; filename = "diffusers_xl_canny_full.safetensors" }) } } | ConvertTo-Json -Depth 10; Invoke-RestMethod -Uri "https://api.runpod.ai/v2/' + endpoint_id + '/run" -Method POST -Headers @{"Authorization" = "Bearer $env:RUNPOD_API_KEY"; "Content-Type" = "application/json"} -Body $b',
+                "dl_cmd_pwsh": '$b = @{ input = @{ command = "download"; downloads = @(@{ source = "url"; url = "https://huggingface.co/diffusers/controlnet-canny-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors"; dest = "controlnet"; filename = "diffusers_xl_canny_full.safetensors" }) } } | ConvertTo-Json -Depth 10; Invoke-RestMethod -Uri "https://api.runpod.ai/v2/' + endpoint_id + '/run" -Method POST -Headers @{"Authorization" = "Bearer $env:RUNPOD_API_KEY"; "Content-Type" = "application/json"} -Body $b',
             },
             {
                 "filename": "controlnet-openpose-sdxl-1.0.safetensors",
