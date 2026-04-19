@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Sparkles, FolderOpen } from 'lucide-react'
+import { Sparkles, FolderOpen, Smartphone, ImageIcon } from 'lucide-react'
 import {
   Tooltip,
   TooltipContent,
@@ -12,6 +12,8 @@ import {
 const SIDEBAR_ITEMS = [
   { href: '/generate', label: 'Generate', icon: Sparkles },
   { href: '/artifacts', label: 'Artifacts', icon: FolderOpen },
+  { href: '/gallery', label: 'Gallery', icon: ImageIcon },
+  { href: '/m', label: 'Mobile', icon: Smartphone },
 ]
 
 export function Sidebar() {

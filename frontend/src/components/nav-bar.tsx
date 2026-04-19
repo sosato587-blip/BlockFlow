@@ -3,7 +3,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { Sparkles, FolderOpen, FileDown, FilePlus2, ChevronDown, Files, FileUp, X, ImageIcon } from 'lucide-react'
+import { Sparkles, FolderOpen, FileDown, FilePlus2, ChevronDown, Files, FileUp, X, ImageIcon, Smartphone } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,6 +22,7 @@ const NAV_ITEMS = [
   { href: '/generate', label: 'Generate', icon: Sparkles },
   { href: '/artifacts', label: 'Artifacts', icon: FolderOpen },
   { href: '/gallery', label: 'Gallery', icon: ImageIcon },
+  { href: '/m', label: 'Mobile', icon: Smartphone },
 ]
 
 export function NavBar() {
