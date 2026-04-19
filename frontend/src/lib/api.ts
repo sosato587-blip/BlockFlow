@@ -76,3 +76,20 @@ export async function saveFlowToDisk(name: string, flow: Record<string, unknown>
   })
   return res.json()
 }
+
+// ---- R2 Gallery ----
+
+export interface R2Image {
+  key: string
+  filename: string
+  size: number
+  last_modified: string
+  url: string
+}
+
+export async function fetchR2Images(limit = 50, offset = 0, prefix = '') {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (prefix) params.set('prefix', prefix)
+  const res = await fetch(`${BASE}/api/r2/list?${params}`)
+  return res.json() as Promise<{ ok: boolean; items: R2Image[]; total: number; limit: number; offset: number; error?: string }>
+}

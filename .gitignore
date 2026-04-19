@@ -21,3 +21,6 @@ frontend/architecture.md
 issues.md
 frontend/issues.md
 logs.txt
+
+# IDE / Claude Code launch configs
+.claude/

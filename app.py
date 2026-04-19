@@ -59,7 +59,7 @@ def main() -> None:
         print(f"[app] Starting Next.js on :{FRONTEND_PORT}...")
         frontend_env = {**os.environ, "BACKEND_PORT": str(BACKEND_PORT)}
         frontend = subprocess.Popen(
-            ["npm", "run", "dev", "--", "--port", str(FRONTEND_PORT)],
+            ["npm.cmd", "run", "dev", "--", "--port", str(FRONTEND_PORT)],
             cwd=str(FRONTEND_DIR),
             env=frontend_env,
         )

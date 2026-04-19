@@ -15,6 +15,7 @@ import { blockDef as upscaleBlockDef } from './generated/upscale'
 import { blockDef as videoLoaderBlockDef } from './generated/video_loader'
 import { blockDef as videoViewerBlockDef } from './generated/video_viewer'
 import { blockDef as wan22ImageToVideoBlockDef } from './generated/wan_22_image_to_video'
+import { blockDef as wanFunControlBlockDef } from './generated/wan_fun_control'
 
 registerBlockDef(civitaiShareBlockDef)
 registerBlockDef(comfyGenBlockDef)
@@ -30,3 +31,4 @@ registerBlockDef(upscaleBlockDef)
 registerBlockDef(videoLoaderBlockDef)
 registerBlockDef(videoViewerBlockDef)
 registerBlockDef(wan22ImageToVideoBlockDef)
+registerBlockDef(wanFunControlBlockDef)
