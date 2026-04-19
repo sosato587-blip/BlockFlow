@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend import config, state, routes
 from backend.r2_routes import router as r2_router
+from backend.m_routes import router as m_router
 
 app = FastAPI(title="BlockFlow API")
 
@@ -23,6 +24,7 @@ app.add_middleware(
 
 app.include_router(routes.router)
 app.include_router(r2_router)
+app.include_router(m_router)
 
 
 def _load_custom_block_sidecars() -> None:

@@ -2,9 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink } from 'lucide-react'
+import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { Slider } from '@/components/ui/slider'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -50,7 +60,7 @@ async function fetchR2Images(
 // ============================================================
 // Types
 // ============================================================
-type TabId = 'gallery' | 'favorites' | 'queue'
+type TabId = 'generate' | 'gallery' | 'favorites' | 'queue' | 'models'
 
 interface RunRecord {
   id: string
@@ -65,21 +75,25 @@ interface RunRecord {
 // Top-level page
 // ============================================================
 const TABS: { id: TabId; label: string; Icon: typeof ImageIcon }[] = [
+  { id: 'generate', label: 'Gen', Icon: Sparkles },
   { id: 'gallery', label: 'Gallery', Icon: ImageIcon },
-  { id: 'favorites', label: 'Favorites', Icon: Heart },
+  { id: 'favorites', label: 'Favs', Icon: Heart },
   { id: 'queue', label: 'Queue', Icon: ListTodo },
+  { id: 'models', label: 'Models', Icon: Database },
 ]
 
 export default function MobilePage() {
-  const [tab, setTab] = useState<TabId>('gallery')
+  const [tab, setTab] = useState<TabId>('generate')
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Header />
       <TabBar current={tab} onChange={setTab} />
       <main className="flex-1 overflow-y-auto pb-24">
+        {tab === 'generate' && <GenerateTab />}
         {tab === 'gallery' && <GalleryTab />}
         {tab === 'favorites' && <FavoritesTab />}
         {tab === 'queue' && <QueueTab />}
+        {tab === 'models' && <ModelsTab />}
       </main>
       <BottomLink />
     </div>
@@ -119,19 +133,19 @@ function Header() {
 function TabBar({ current, onChange }: { current: TabId; onChange: (id: TabId) => void }) {
   return (
     <nav className="sticky top-[57px] z-10 border-b border-border/40 bg-background/85 backdrop-blur-md">
-      <div className="grid grid-cols-3">
+      <div className="grid grid-cols-5">
         {TABS.map(({ id, label, Icon }) => {
           const active = current === id
           return (
             <button
               key={id}
               onClick={() => onChange(id)}
-              className={`relative flex items-center justify-center gap-1.5 py-3 text-xs font-medium transition-colors ${
+              className={`relative flex flex-col items-center justify-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors ${
                 active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
               }`}
             >
-              <Icon className="w-3.5 h-3.5" />
-              {label}
+              <Icon className="w-4 h-4" />
+              <span>{label}</span>
               {active && (
                 <span className="absolute bottom-0 left-1/4 right-1/4 h-0.5 rounded-t-full bg-gradient-to-r from-orange-400 to-pink-500" />
               )}
@@ -558,6 +572,467 @@ function BottomLink() {
         </Link>
       </div>
     </footer>
+  )
+}
+
+// ============================================================
+// Generate Tab — quick image generation (mobile-first form)
+// ============================================================
+
+type ModelKind = 'z_image' | 'illustrious'
+
+interface InventoryFile {
+  filename: string
+  size_mb?: number
+}
+
+interface InventoryResp {
+  ok: boolean
+  inventory?: Record<string, InventoryFile[]>
+  totals?: Record<string, { count: number; size_mb: number }>
+  grand_total?: { files: number; size_mb: number }
+  errors?: Record<string, string> | null
+}
+
+interface GenJob {
+  remote_job_id: string
+  status: string
+  output?: { url?: string; [k: string]: unknown }
+  error?: string
+}
+
+const PROMPT_PRESETS: Record<ModelKind, { label: string; text: string }[]> = {
+  z_image: [
+    { label: 'Real woman portrait', text: '1girl, beautiful japanese woman, 22 years old, photorealistic, professional photography, golden hour, natural smile, cute face, slim body, white summer dress, soft natural light, film grain, sharp focus, 8k uhd' },
+    { label: 'Real woman cafe', text: '1girl, beautiful japanese woman, 22 years old, sitting at cafe window, casual cardigan, relaxed smile, soft window light, photorealistic, shallow depth of field, film grain' },
+    { label: 'Real woman bedroom', text: '1girl, beautiful japanese woman, 22 years old, bedroom morning light, white lingerie, looking back over shoulder, soft warm sunlight, photorealistic, intimate, sharp focus' },
+  ],
+  illustrious: [
+    { label: 'Anime portrait', text: '1girl, masterpiece, best quality, very aesthetic, beautiful detailed eyes, anime style, illustrious, school uniform, looking at viewer, gentle smile, soft lighting' },
+    { label: 'Anime fantasy', text: '1girl, masterpiece, best quality, magical girl outfit, fantasy background, dynamic pose, sparkles, soft pastel colors, anime style' },
+  ],
+}
+
+function GenerateTab() {
+  const [model, setModel] = useState<ModelKind>('z_image')
+  const [prompt, setPrompt] = useState('')
+  const [width, setWidth] = useState(1080)
+  const [height, setHeight] = useState(1920)
+  const [submitting, setSubmitting] = useState(false)
+  const [job, setJob] = useState<GenJob | null>(null)
+  const [polling, setPolling] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [loraName, setLoraName] = useState<string>('__none__')
+  const [loraStrength, setLoraStrength] = useState(0.8)
+  const [loraOptions, setLoraOptions] = useState<string[]>([])
+
+  // Fetch LoRA options from inventory once
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch('/api/m/inventory')
+        const data: InventoryResp = await res.json()
+        const loras = (data?.inventory?.loras || []).map((f) => f.filename)
+        setLoraOptions(loras.sort())
+      } catch (e) {
+        console.error('inventory fetch failed', e)
+      }
+    })()
+  }, [])
+
+  // Apply default dimensions when model changes
+  const onModelChange = (next: string) => {
+    const m = (next as ModelKind)
+    setModel(m)
+    if (m === 'z_image') {
+      setWidth(1080)
+      setHeight(1920)
+    } else {
+      setWidth(1024)
+      setHeight(1536)
+    }
+  }
+
+  // Polling
+  useEffect(() => {
+    if (!job || job.status === 'COMPLETED' || job.status === 'FAILED' || job.status === 'CANCELLED') {
+      setPolling(false)
+      return
+    }
+    setPolling(true)
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/m/status/${job.remote_job_id}`)
+        const data = await res.json()
+        if (data?.ok) {
+          setJob({
+            remote_job_id: job.remote_job_id,
+            status: String(data.status || 'UNKNOWN').toUpperCase(),
+            output: data.output,
+            error: data.output?.error || data.error,
+          })
+        }
+      } catch (e) {
+        console.error('poll failed', e)
+      }
+    }, 5000)
+    return () => clearInterval(t)
+  }, [job])
+
+  const submit = async () => {
+    if (!prompt.trim()) {
+      setError('Prompt is required')
+      return
+    }
+    setError(null)
+    setSubmitting(true)
+    setJob(null)
+    try {
+      const body: Record<string, unknown> = { model, prompt, width, height }
+      if (loraName !== '__none__') {
+        body.loras = [{ name: loraName, strength: loraStrength }]
+      }
+      const res = await fetch('/api/m/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!data?.ok) {
+        setError(data?.error || 'submit failed')
+        return
+      }
+      setJob({ remote_job_id: data.remote_job_id, status: 'IN_QUEUE' })
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const outputUrl = job?.output?.url ? String(job.output.url) : null
+
+  return (
+    <div className="px-3 py-3 space-y-4">
+      {/* Model picker */}
+      <div className="space-y-1.5">
+        <label className="text-xs font-medium text-muted-foreground">Model</label>
+        <Select value={model} onValueChange={onModelChange}>
+          <SelectTrigger className="w-full h-10">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="z_image">Z-Image Turbo (Real, fast)</SelectItem>
+            <SelectItem value="illustrious">Illustrious XL (Anime, detailed)</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Prompt presets */}
+      <div className="flex flex-wrap gap-1.5">
+        {PROMPT_PRESETS[model].map((p) => (
+          <button
+            key={p.label}
+            onClick={() => setPrompt(p.text)}
+            className="text-[10px] px-2 py-1 rounded-md border border-border/50 bg-card hover:border-orange-400/50 transition-colors"
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Prompt textarea */}
+      <div className="space-y-1.5">
+        <label className="text-xs font-medium text-muted-foreground">Prompt</label>
+        <Textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="Describe what you want to generate..."
+          className="min-h-[120px] text-sm"
+        />
+      </div>
+
+      {/* LoRA selector */}
+      {loraOptions.length > 0 && (
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">LoRA (optional)</label>
+          <Select value={loraName} onValueChange={setLoraName}>
+            <SelectTrigger className="w-full h-9 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__none__">(none)</SelectItem>
+              {loraOptions.map((name) => (
+                <SelectItem key={name} value={name} className="text-xs">
+                  {name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {loraName !== '__none__' && (
+            <div className="flex items-center gap-2">
+              <Slider
+                value={[loraStrength]}
+                onValueChange={([v]) => setLoraStrength(v)}
+                min={0}
+                max={2}
+                step={0.05}
+                className="flex-1"
+              />
+              <span className="text-[10px] font-mono text-muted-foreground w-10 text-right">
+                {loraStrength.toFixed(2)}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Dimensions */}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <label className="text-[10px] font-medium text-muted-foreground">Width</label>
+          <Input
+            type="number"
+            value={width}
+            onChange={(e) => setWidth(parseInt(e.target.value) || 0)}
+            className="h-8 text-xs"
+            min={256}
+            max={2048}
+            step={64}
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] font-medium text-muted-foreground">Height</label>
+          <Input
+            type="number"
+            value={height}
+            onChange={(e) => setHeight(parseInt(e.target.value) || 0)}
+            className="h-8 text-xs"
+            min={256}
+            max={2048}
+            step={64}
+          />
+        </div>
+      </div>
+
+      {/* Submit */}
+      <Button
+        onClick={submit}
+        disabled={submitting || !prompt.trim()}
+        className="w-full h-12 text-sm font-semibold bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white"
+      >
+        {submitting ? (
+          <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Submitting...</>
+        ) : (
+          <><Sparkles className="w-4 h-4 mr-2" /> Generate</>
+        )}
+      </Button>
+
+      {/* Error */}
+      {error && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400 flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Job status */}
+      {job && (
+        <div className="rounded-lg border border-border/40 bg-card/50 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium">Status</span>
+            <Badge
+              variant="outline"
+              className={`text-[10px] ${
+                job.status === 'COMPLETED' ? 'border-emerald-500/40 text-emerald-400' :
+                job.status === 'FAILED' ? 'border-red-500/40 text-red-400' :
+                'border-amber-500/40 text-amber-400'
+              }`}
+            >
+              {job.status}
+              {polling && <Loader2 className="w-3 h-3 ml-1 animate-spin inline" />}
+            </Badge>
+          </div>
+          <div className="text-[10px] font-mono text-muted-foreground truncate">
+            {job.remote_job_id}
+          </div>
+
+          {outputUrl && (
+            <div className="space-y-2 pt-2">
+              <div className="flex items-center gap-1.5 text-xs text-emerald-400">
+                <CheckCircle2 className="w-3 h-3" /> Image ready
+              </div>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={outputUrl}
+                alt="Generated"
+                className="w-full rounded-lg border border-border/40"
+                loading="lazy"
+              />
+              <a
+                href={outputUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] text-orange-400 hover:underline flex items-center gap-1"
+              >
+                Open original <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+          )}
+
+          {job.error && (
+            <div className="text-[10px] text-red-400 mt-1">{job.error}</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================
+// Models Tab — inventory of RunPod Network Volume
+// ============================================================
+
+const MODEL_TYPE_LABELS: Record<string, string> = {
+  checkpoints: 'Checkpoints',
+  diffusion_models: 'Diffusion Models',
+  text_encoders: 'Text Encoders',
+  vae: 'VAE',
+  clip_vision: 'Clip Vision',
+  loras: 'LoRAs',
+  upscale_models: 'Upscale Models',
+}
+
+function ModelsTab() {
+  const [data, setData] = useState<InventoryResp | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/m/inventory')
+      const json: InventoryResp = await res.json()
+      if (json?.ok) {
+        setData(json)
+      } else {
+        setError('Failed to load inventory')
+      }
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  return (
+    <div className="px-3 py-3">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-medium text-muted-foreground">
+          Network Volume Inventory
+        </h2>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={load}
+          disabled={loading}
+          className="h-7 px-2 text-xs"
+        >
+          <RefreshCw className={`w-3 h-3 mr-1 ${loading ? 'animate-spin' : ''}`} />
+          Refresh
+        </Button>
+      </div>
+
+      {error && (
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-400 mb-3">
+          {error}
+        </div>
+      )}
+
+      {loading && !data ? (
+        <div className="space-y-2">
+          {Array.from({ length: 7 }).map((_, i) => (
+            <div key={i} className="h-12 rounded-lg bg-card animate-pulse" />
+          ))}
+        </div>
+      ) : data ? (
+        <>
+          {/* Grand total */}
+          <div className="rounded-lg border border-orange-500/30 bg-gradient-to-br from-orange-500/5 to-pink-500/5 p-3 mb-3">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Total</div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-bold tabular-nums">{data.grand_total?.files || 0}</span>
+              <span className="text-xs text-muted-foreground">files</span>
+              <span className="text-xs text-muted-foreground ml-auto font-mono">
+                {((data.grand_total?.size_mb || 0) / 1024).toFixed(1)} GB / 200 GB
+              </span>
+            </div>
+          </div>
+
+          {/* Per-category */}
+          <div className="space-y-1.5">
+            {Object.entries(MODEL_TYPE_LABELS).map(([mt, label]) => {
+              const items = data.inventory?.[mt] || []
+              const total = data.totals?.[mt]
+              const isExpanded = expanded === mt
+              return (
+                <div key={mt} className="rounded-lg border border-border/40 bg-card/30 overflow-hidden">
+                  <button
+                    onClick={() => setExpanded(isExpanded ? null : mt)}
+                    className="w-full flex items-center justify-between p-3 hover:bg-card/50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2 text-left">
+                      <span className="text-xs font-medium">{label}</span>
+                      {total && (
+                        <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4">
+                          {total.count}
+                        </Badge>
+                      )}
+                    </div>
+                    <span className="text-[10px] font-mono text-muted-foreground">
+                      {total ? `${(total.size_mb / 1024).toFixed(2)} GB` : '—'}
+                    </span>
+                  </button>
+                  {isExpanded && (
+                    <ul className="border-t border-border/40 max-h-64 overflow-y-auto">
+                      {items.length === 0 ? (
+                        <li className="px-3 py-2 text-[10px] text-muted-foreground italic">
+                          (empty or fetch failed)
+                        </li>
+                      ) : (
+                        items.map((f, i) => (
+                          <li key={i} className="px-3 py-1.5 text-[10px] flex items-center justify-between gap-2 border-t border-border/20 first:border-t-0">
+                            <span className="truncate font-mono text-foreground/80">{f.filename}</span>
+                            <span className="text-muted-foreground/70 shrink-0">
+                              {(f.size_mb || 0).toFixed(0)} MB
+                            </span>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+
+          {data.errors && Object.keys(data.errors).length > 0 && (
+            <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-[10px] text-amber-400">
+              <div className="font-medium mb-1">Partial fetch errors:</div>
+              {Object.entries(data.errors).map(([k, v]) => (
+                <div key={k}>{k}: {v}</div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : null}
+    </div>
   )
 }
 
