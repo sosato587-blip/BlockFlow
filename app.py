@@ -1,12 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = [
-#     "fastapi>=0.115",
-#     "uvicorn>=0.30",
-#     "boto3>=1.34",
-#     "loguru>=0.7",
-#     "comfy-gen>=0.2",
-# ]
+# dependencies = ["fastapi>=0.115", "uvicorn>=0.30", "boto3>=1.34", "loguru>=0.7"]
 # ///
 """Single entrypoint: starts FastAPI backend + Next.js frontend, opens browser."""
 from __future__ import annotations
