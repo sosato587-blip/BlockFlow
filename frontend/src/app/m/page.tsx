@@ -1645,6 +1645,13 @@ function GenerateTab() {
   // Inpaint
   const [inpaintOpen, setInpaintOpen] = useState(false)
   const [inpaintSourceUrl, setInpaintSourceUrl] = useState('')
+  // ControlNet
+  const [cnEnabled, setCnEnabled] = useState(false)
+  const [cnReferenceUrl, setCnReferenceUrl] = useState('')
+  const [cnType, setCnType] = useState<'canny'>('canny')
+  const [cnStrength, setCnStrength] = useState(0.7)
+  const [cnCannyLow, setCnCannyLow] = useState(100)
+  const [cnCannyHigh, setCnCannyHigh] = useState(200)
   // A/B compare mode
   const [abBatchId, setAbBatchId] = useState<string | null>(null)
   const [abJobs, setAbJobs] = useState<Array<{
@@ -1909,7 +1916,18 @@ function GenerateTab() {
         body.length = length
         body.fps = fps
       }
-      const res = await fetch('/api/m/generate', {
+
+      // ControlNet routing: use dedicated endpoint if enabled
+      const useCn = cnEnabled && cnReferenceUrl.trim() && model === 'illustrious'
+      const endpoint = useCn ? '/api/m/generate_controlnet' : '/api/m/generate'
+      if (useCn) {
+        body.reference_image_url = cnReferenceUrl.trim()
+        body.controlnet_type = cnType
+        body.controlnet_strength = cnStrength
+        body.canny_low = cnCannyLow
+        body.canny_high = cnCannyHigh
+      }
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -2490,6 +2508,71 @@ function GenerateTab() {
               step={2}
             />
           </div>
+        </div>
+      )}
+
+      {/* ControlNet section (Illustrious only for now) */}
+      {model === 'illustrious' && (
+        <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-cyan-300 flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={cnEnabled}
+                onChange={(e) => setCnEnabled(e.target.checked)}
+                className="w-4 h-4 accent-cyan-500"
+              />
+              ControlNet (composition control)
+            </label>
+            {cnEnabled && (
+              <Badge variant="outline" className="text-[9px] border-cyan-500/40 text-cyan-300">
+                Canny mode
+              </Badge>
+            )}
+          </div>
+          {cnEnabled && (
+            <div className="space-y-2 pt-1">
+              <div className="space-y-1">
+                <label className="text-[10px] text-muted-foreground">Reference image URL</label>
+                <Input
+                  value={cnReferenceUrl}
+                  onChange={(e) => setCnReferenceUrl(e.target.value)}
+                  placeholder="Paste URL of the composition reference (any image)"
+                  className="h-8 text-xs font-mono"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] text-muted-foreground">
+                  Strength: {cnStrength.toFixed(2)} (0.5 = loose, 1.0 = strict)
+                </label>
+                <Slider
+                  value={[cnStrength]}
+                  onValueChange={([v]) => setCnStrength(v)}
+                  min={0.1}
+                  max={1.2}
+                  step={0.05}
+                />
+              </div>
+              <details className="text-[10px]">
+                <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                  Canny thresholds (edge detection sensitivity)
+                </summary>
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div className="space-y-1">
+                    <label className="text-[9px] text-muted-foreground">Low</label>
+                    <Input type="number" value={cnCannyLow} onChange={(e) => setCnCannyLow(parseInt(e.target.value) || 100)} className="h-7 text-xs" min={0} max={255} />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[9px] text-muted-foreground">High</label>
+                    <Input type="number" value={cnCannyHigh} onChange={(e) => setCnCannyHigh(parseInt(e.target.value) || 200)} className="h-7 text-xs" min={0} max={255} />
+                  </div>
+                </div>
+              </details>
+              <p className="text-[9px] text-muted-foreground italic">
+                Note: First use requires DL of ControlNet model (~2.5GB). If generate fails with model-not-found, go to Models tab for DL command.
+              </p>
+            </div>
+          )}
         </div>
       )}
 

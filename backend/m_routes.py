@@ -122,6 +122,132 @@ def build_z_image_workflow(
     return wf
 
 
+def build_illustrious_controlnet_canny_workflow(
+    prompt: str,
+    reference_filename: str,
+    controlnet_model: str = "diffusers_xl_canny_full.safetensors",
+    controlnet_strength: float = 0.7,
+    width: int = 1024,
+    height: int = 1536,
+    steps: int = 30,
+    cfg: float = 7.0,
+    seed: int | None = None,
+    negative: str = NEGATIVE_DEFAULT,
+    loras: list[dict[str, Any]] | None = None,
+    sampler_name: str = "dpmpp_2m_sde",
+    scheduler: str = "karras",
+    canny_low: int = 100,
+    canny_high: int = 200,
+) -> dict[str, Any]:
+    """Illustrious XL + ControlNet Canny workflow.
+
+    Uses Canny edge detection (algorithmic, no preprocessor model needed) on a
+    reference image to guide composition. Great for preserving overall layout /
+    pose while changing style or details.
+
+    Requires:
+    - ControlNet SDXL Canny model at /runpod-volume/models/controlnet/{controlnet_model}
+    - Reference image provided via file_inputs (downloaded to reference_filename)
+    """
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
+
+    wf: dict[str, Any] = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "waiIllustriousSDXL_v160.safetensors"},
+        },
+        "20": {
+            "class_type": "LoadImage",
+            "inputs": {"image": reference_filename},
+        },
+        "21": {
+            "class_type": "CannyEdgePreprocessor",
+            "inputs": {
+                "image": ["20", 0],
+                "low_threshold": canny_low,
+                "high_threshold": canny_high,
+                "resolution": 1024,
+            },
+        },
+        "22": {
+            "class_type": "ControlNetLoader",
+            "inputs": {"control_net_name": controlnet_model},
+        },
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": width, "height": height, "batch_size": 1},
+        },
+        "10": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["1", 1], "text": prompt},
+        },
+        "11": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["1", 1], "text": negative},
+        },
+        "23": {
+            "class_type": "ControlNetApplyAdvanced",
+            "inputs": {
+                "positive": ["10", 0],
+                "negative": ["11", 0],
+                "control_net": ["22", 0],
+                "image": ["21", 0],
+                "strength": controlnet_strength,
+                "start_percent": 0.0,
+                "end_percent": 1.0,
+            },
+        },
+        "6": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["23", 0],
+                "negative": ["23", 1],
+                "latent_image": ["5", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
+                "denoise": 1.0,
+            },
+        },
+        "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["7", 0], "filename_prefix": "IL_cn_canny"},
+        },
+    }
+
+    if loras:
+        prev_model = "1"
+        prev_clip = "1"
+        prev_model_idx = 0
+        prev_clip_idx = 1
+        for i, lora in enumerate(loras):
+            nid = f"300{i}"
+            wf[nid] = {
+                "class_type": "LoraLoader",
+                "inputs": {
+                    "model": [prev_model, prev_model_idx],
+                    "clip": [prev_clip, prev_clip_idx],
+                    "lora_name": str(lora.get("name")),
+                    "strength_model": float(lora.get("strength", 1.0)),
+                    "strength_clip": float(lora.get("strength", 1.0)),
+                },
+            }
+            prev_model = nid
+            prev_clip = nid
+            prev_model_idx = 0
+            prev_clip_idx = 1
+        wf["6"]["inputs"]["model"] = [prev_model, 0]
+        wf["10"]["inputs"]["clip"] = [prev_clip, 1]
+        wf["11"]["inputs"]["clip"] = [prev_clip, 1]
+
+    return wf
+
+
 def build_illustrious_inpaint_workflow(
     image_filename: str,
     mask_filename: str,
@@ -1007,6 +1133,142 @@ async def m_upload(request: Request) -> JSONResponse:
 
 
 # ============================================================
+# ControlNet (composition control via reference image)
+# ============================================================
+
+@router.post("/api/m/generate_controlnet")
+async def m_generate_controlnet(request: Request) -> JSONResponse:
+    """Submit a ControlNet-guided generation.
+
+    Body: {
+      reference_image_url: "https://...",   // reference photo for composition
+      controlnet_type: "canny",             // only 'canny' supported for now
+      controlnet_model: "controlnet-canny-sdxl-1.0.safetensors" (optional),
+      controlnet_strength: 0.7,
+      prompt: "...",
+      loras, width, height, steps, cfg, seed, negative, sampler, scheduler (optional)
+      canny_low: 100, canny_high: 200 (optional)
+      endpoint_id (optional)
+    }
+    """
+    import traceback
+    try:
+        payload = await request.json()
+        reference_url = str(payload.get("reference_image_url") or "").strip()
+        prompt = str(payload.get("prompt") or "").strip()
+        if not reference_url:
+            return JSONResponse({"ok": False, "error": "reference_image_url required"}, status_code=400)
+        if not prompt:
+            return JSONResponse({"ok": False, "error": "prompt required"}, status_code=400)
+
+        cn_type = str(payload.get("controlnet_type") or "canny").lower()
+        if cn_type != "canny":
+            return JSONResponse({"ok": False, "error": f"unsupported controlnet_type: {cn_type} (only 'canny' for now)"}, status_code=400)
+
+        endpoint_id = str(payload.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
+        if not endpoint_id:
+            return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=400)
+
+        controlnet_model = str(payload.get("controlnet_model") or "diffusers_xl_canny_full.safetensors").strip()
+        seed = payload.get("seed")
+        loras = payload.get("loras") or []
+        reference_filename = "m_cn_ref.png"
+
+        workflow = build_illustrious_controlnet_canny_workflow(
+            prompt=prompt,
+            reference_filename=reference_filename,
+            controlnet_model=controlnet_model,
+            controlnet_strength=float(payload.get("controlnet_strength") or 0.7),
+            width=int(payload.get("width") or 1024),
+            height=int(payload.get("height") or 1536),
+            steps=int(payload.get("steps") or 30),
+            cfg=float(payload.get("cfg") or 7.0),
+            seed=int(seed) if seed is not None else None,
+            negative=str(payload.get("negative") or NEGATIVE_DEFAULT),
+            loras=loras,
+            sampler_name=str(payload.get("sampler_name") or "dpmpp_2m_sde"),
+            scheduler=str(payload.get("scheduler") or "karras"),
+            canny_low=int(payload.get("canny_low") or 100),
+            canny_high=int(payload.get("canny_high") or 200),
+        )
+
+        file_inputs = {
+            "20": {"url": reference_url, "filename": reference_filename, "field": "image"},
+        }
+
+        try:
+            remote_job_id = services._submit_job(endpoint_id, {
+                "workflow": workflow,
+                "file_inputs": file_inputs,
+                "timeout": 600,
+            })
+        except Exception as e:
+            err_str = str(e)
+            # Detect missing ControlNet model (common first-run failure)
+            if "controlnet" in err_str.lower() or "ControlNetLoader" in err_str:
+                return JSONResponse({
+                    "ok": False,
+                    "error": f"ControlNet model '{controlnet_model}' not found on volume. See /api/m/controlnet_dl_info for download instructions.",
+                    "detail": err_str,
+                }, status_code=424)
+            return JSONResponse({"ok": False, "error": f"submit failed: {e}"}, status_code=502)
+
+        est = m_store.estimate_cost(
+            model="illustrious", width=int(payload.get("width") or 1024),
+            height=int(payload.get("height") or 1536), steps=int(payload.get("steps") or 30),
+        )
+        m_store.log_cost({
+            "model": "illustrious_controlnet_canny",
+            "width": int(payload.get("width") or 1024),
+            "height": int(payload.get("height") or 1536),
+            "steps": int(payload.get("steps") or 30),
+            "est_cost_usd": round(est, 4),
+            "remote_job_id": remote_job_id,
+        })
+
+        return JSONResponse({
+            "ok": True,
+            "remote_job_id": remote_job_id,
+            "endpoint_id": endpoint_id,
+            "est_cost_usd": round(est, 4),
+            "submitted_at": time.time(),
+        })
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/generate_controlnet] ERROR: {e}\n{tb}", flush=True)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@router.get("/api/m/controlnet_dl_info")
+async def m_controlnet_dl_info() -> JSONResponse:
+    """Return ControlNet model download info for the UI."""
+    endpoint_id = config.RUNPOD_ENDPOINT_ID
+    return JSONResponse({
+        "ok": True,
+        "installed_models": [],  # TODO: query list_models with model_type=controlnet
+        "recommended_models": [
+            {
+                "filename": "diffusers_xl_canny_full.safetensors",
+                "type": "canny",
+                "size_mb": 2500,
+                "source_url": "https://huggingface.co/diffusers/controlnet-canny-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors",
+                "description": "Official ControlNet Canny for SDXL (works with Illustrious).",
+                "dl_cmd": f'curl -X POST "https://api.runpod.ai/v2/{endpoint_id}/run" -H "Authorization: Bearer $RUNPOD_API_KEY" -H "Content-Type: application/json" -d \'{{"input":{{"command":"download","source":"url","url":"https://huggingface.co/diffusers/controlnet-canny-sdxl-1.0/resolve/main/diffusion_pytorch_model.safetensors","dest":"controlnet","filename":"diffusers_xl_canny_full.safetensors"}}}}\'',
+            },
+            {
+                "filename": "controlnet-openpose-sdxl-1.0.safetensors",
+                "type": "openpose",
+                "size_mb": 2500,
+                "source_url": "https://huggingface.co/thibaud/controlnet-openpose-sdxl-1.0/resolve/main/OpenPoseXL2.safetensors",
+                "description": "Thibaud's OpenPose for SDXL. Pose control from skeleton input.",
+                "note": "Also requires preprocessor models (body_pose, hand_pose, face). Future phase.",
+            },
+        ],
+        "install_location": "/runpod-volume/models/controlnet/",
+    })
+
+
+# ============================================================
 # Inpaint (partial regeneration)
 # ============================================================
 
@@ -1200,6 +1462,7 @@ def _do_inventory() -> JSONResponse:
         "clip_vision",
         "loras",
         "upscale_models",
+        "controlnet",
     ]
 
     inventory: dict[str, Any] = {}
