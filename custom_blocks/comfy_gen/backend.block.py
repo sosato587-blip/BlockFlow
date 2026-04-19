@@ -127,32 +127,123 @@ def _run_refresh(cmd: list[str]) -> None:
         _refresh_state["running"] = False
 
 
+# ComfyUI standard samplers/schedulers (used as fallback when comfy-gen CLI unavailable)
+_FALLBACK_SAMPLERS = [
+    "euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp",
+    "heun", "heunpp2", "dpm_2", "dpm_2_ancestral", "lms",
+    "dpm_fast", "dpm_adaptive",
+    "dpmpp_2s_ancestral", "dpmpp_2s_ancestral_cfg_pp",
+    "dpmpp_sde", "dpmpp_sde_gpu",
+    "dpmpp_2m", "dpmpp_2m_cfg_pp", "dpmpp_2m_sde", "dpmpp_2m_sde_gpu",
+    "dpmpp_3m_sde", "dpmpp_3m_sde_gpu",
+    "ddpm", "lcm", "ipndm", "ipndm_v", "deis",
+    "ddim", "uni_pc", "uni_pc_bh2", "restart",
+    "gradient_estimation", "er_sde",
+    "seeds_2", "seeds_3",
+    "res_multistep", "res_multistep_cfg_pp",
+    "res_multistep_ancestral", "res_multistep_ancestral_cfg_pp",
+]
+_FALLBACK_SCHEDULERS = [
+    "normal", "karras", "exponential", "sgm_uniform",
+    "simple", "ddim_uniform", "beta", "linear_quadratic", "kl_optimal",
+]
+
+
+def _run_serverless_refresh(endpoint_id: str) -> None:
+    """Fallback refresh using RunPod Serverless list_models (no CLI needed).
+
+    Fetches LoRAs via the Serverless handler's list_models command and
+    uses hardcoded sampler/scheduler lists. This gets the Sync button to
+    complete cleanly even without the comfy-gen CLI installed.
+    """
+    try:
+        from backend import services
+        _refresh_state["status"] = "Fetching LoRAs via Serverless..."
+
+        url = f"{config.RUNPOD_API_BASE}/{endpoint_id}/run"
+        submit_resp = services._request_json(
+            "POST", url,
+            {"input": {"command": "list_models", "model_type": "loras"}},
+            timeout=15,
+        )
+        job_id = submit_resp.get("id")
+        if not job_id:
+            _refresh_state["error"] = f"Serverless submit failed: {submit_resp}"
+            return
+
+        # Poll up to 60s
+        status_url = f"{config.RUNPOD_API_BASE}/{endpoint_id}/status/{job_id}"
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            resp = services._request_json("GET", status_url, None, timeout=10)
+            s = str(resp.get("status", "")).upper()
+            _refresh_state["status"] = f"Polling {s}..."
+            if s == "COMPLETED":
+                output = resp.get("output", {})
+                files = output.get("files", []) if isinstance(output, dict) else []
+                loras = [f["filename"] for f in files if isinstance(f, dict) and "filename" in f]
+                _cache["samplers"] = _FALLBACK_SAMPLERS
+                _cache["schedulers"] = _FALLBACK_SCHEDULERS
+                _cache["loras"] = loras
+                _cache["fetched_at"] = time.time()
+                _save_cache_to_disk()
+                _refresh_state["status"] = f"Done (Serverless fallback) — {len(loras)} loras"
+                return
+            if s in ("FAILED", "CANCELLED", "TIMED_OUT"):
+                _refresh_state["error"] = f"Serverless status={s}"
+                return
+            time.sleep(3)
+
+        _refresh_state["error"] = "Serverless polling timeout (60s)"
+    except Exception as e:
+        _refresh_state["error"] = f"Serverless refresh error: {e}"
+    finally:
+        _refresh_state["done"] = True
+        _refresh_state["running"] = False
+
+
 @router.post("/refresh-cache")
 def refresh_cache(payload: dict[str, Any] = {}) -> JSONResponse:
-    """Start comfy-gen info in background, returns immediately."""
+    """Start cache refresh in background, returns immediately.
+
+    Primary path: comfy-gen CLI (gets samplers/schedulers/loras from ComfyUI).
+    Fallback: RunPod Serverless list_models + hardcoded sampler/scheduler lists.
+    Fallback ensures Sync button completes even without comfy-gen CLI installed.
+    """
     import shutil
 
     with _refresh_lock:
         if _refresh_state["running"]:
             return JSONResponse({"ok": True, "already_running": True})
 
-        if not shutil.which("comfy-gen"):
-            return JSONResponse({"ok": False, "error": "comfy-gen CLI not found on PATH"})
-
         eid = str(payload.get("endpoint_id", "")).strip() or config.RUNPOD_ENDPOINT_ID or ""
-        cmd = ["comfy-gen", "info"]
-        if eid:
-            cmd.extend(["--endpoint-id", eid])
 
         _refresh_state["running"] = True
         _refresh_state["done"] = False
         _refresh_state["error"] = ""
-        _refresh_state["status"] = "Starting comfy-gen info..."
 
-        t = threading.Thread(target=_run_refresh, args=(cmd,), daemon=True)
+        if shutil.which("comfy-gen"):
+            # Primary: comfy-gen CLI
+            cmd = ["comfy-gen", "info"]
+            if eid:
+                cmd.extend(["--endpoint-id", eid])
+            _refresh_state["status"] = "Starting comfy-gen info..."
+            t = threading.Thread(target=_run_refresh, args=(cmd,), daemon=True)
+            t.start()
+            return JSONResponse({"ok": True, "started": True, "mode": "cli"})
+
+        # Fallback: Serverless
+        if not eid:
+            _refresh_state["error"] = "RUNPOD_ENDPOINT_ID not set (CLI fallback requires it)"
+            _refresh_state["done"] = True
+            _refresh_state["running"] = False
+            return JSONResponse({"ok": False, "error": _refresh_state["error"]})
+
+        _refresh_state["status"] = "Using Serverless fallback (comfy-gen CLI not installed)..."
+        t = threading.Thread(target=_run_serverless_refresh, args=(eid,), daemon=True)
         t.start()
 
-    return JSONResponse({"ok": True, "started": True})
+    return JSONResponse({"ok": True, "started": True, "mode": "serverless_fallback"})
 
 
 @router.get("/refresh-status")
