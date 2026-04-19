@@ -122,6 +122,134 @@ def build_z_image_workflow(
     return wf
 
 
+def build_illustrious_ipadapter_workflow(
+    prompt: str,
+    reference_filename: str,
+    ipadapter_file: str = "ip-adapter-plus_sdxl_vit-h.safetensors",
+    clip_vision_file: str = "clip_vision_h.safetensors",
+    weight: float = 0.7,
+    weight_type: str = "linear",
+    start_at: float = 0.0,
+    end_at: float = 1.0,
+    width: int = 1024,
+    height: int = 1536,
+    steps: int = 30,
+    cfg: float = 7.0,
+    seed: int | None = None,
+    negative: str = NEGATIVE_DEFAULT,
+    loras: list[dict[str, Any]] | None = None,
+    sampler_name: str = "dpmpp_2m_sde",
+    scheduler: str = "karras",
+) -> dict[str, Any]:
+    """Illustrious XL + IP-Adapter workflow (Chara IP).
+
+    Injects character identity from a reference image via IP-Adapter,
+    preserving face/style features without needing a trained LoRA.
+
+    Requires:
+    - CLIP Vision model at models/clip_vision/ (we have clip_vision_h.safetensors)
+    - IP-Adapter model at models/ipadapter/ (default: ip-adapter-plus_sdxl_vit-h)
+    - Custom node: ComfyUI_IPAdapter_plus (by cubiq)
+    """
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
+
+    wf: dict[str, Any] = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "waiIllustriousSDXL_v160.safetensors"},
+        },
+        "60": {
+            "class_type": "LoadImage",
+            "inputs": {"image": reference_filename},
+        },
+        "61": {
+            "class_type": "CLIPVisionLoader",
+            "inputs": {"clip_name": clip_vision_file},
+        },
+        "62": {
+            "class_type": "IPAdapterModelLoader",
+            "inputs": {"ipadapter_file": ipadapter_file},
+        },
+        "63": {
+            "class_type": "IPAdapterAdvanced",
+            "inputs": {
+                "model": ["1", 0],
+                "ipadapter": ["62", 0],
+                "image": ["60", 0],
+                "clip_vision": ["61", 0],
+                "weight": weight,
+                "weight_type": weight_type,
+                "combine_embeds": "concat",
+                "start_at": start_at,
+                "end_at": end_at,
+                "embeds_scaling": "V only",
+            },
+        },
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": width, "height": height, "batch_size": 1},
+        },
+        "10": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["1", 1], "text": prompt},
+        },
+        "11": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["1", 1], "text": negative},
+        },
+        "6": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["63", 0],
+                "positive": ["10", 0],
+                "negative": ["11", 0],
+                "latent_image": ["5", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
+                "denoise": 1.0,
+            },
+        },
+        "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["7", 0], "filename_prefix": "IL_charaip"},
+        },
+    }
+
+    # LoRA chain — applied to the model BEFORE IPAdapter injection
+    if loras:
+        prev_model = "1"
+        prev_clip = "1"
+        prev_model_idx = 0
+        prev_clip_idx = 1
+        for i, lora in enumerate(loras):
+            nid = f"500{i}"
+            wf[nid] = {
+                "class_type": "LoraLoader",
+                "inputs": {
+                    "model": [prev_model, prev_model_idx],
+                    "clip": [prev_clip, prev_clip_idx],
+                    "lora_name": str(lora.get("name")),
+                    "strength_model": float(lora.get("strength", 1.0)),
+                    "strength_clip": float(lora.get("strength", 1.0)),
+                },
+            }
+            prev_model = nid
+            prev_clip = nid
+            prev_model_idx = 0
+            prev_clip_idx = 1
+        # IPAdapter takes the LoRA-modified model
+        wf["63"]["inputs"]["model"] = [prev_model, 0]
+        wf["10"]["inputs"]["clip"] = [prev_clip, 1]
+        wf["11"]["inputs"]["clip"] = [prev_clip, 1]
+
+    return wf
+
+
 def build_illustrious_face_detailer_workflow(
     image_filename: str,
     face_prompt: str = "beautiful face, detailed eyes, sharp focus, high quality, natural skin",
@@ -1258,6 +1386,136 @@ async def m_upload(request: Request) -> JSONResponse:
         tb = traceback.format_exc()
         print(f"[m/upload] ERROR: {e}\n{tb}", flush=True)
         return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+# ============================================================
+# Chara IP (IP-Adapter — character identity injection)
+# ============================================================
+
+@router.post("/api/m/generate_charaip")
+async def m_generate_charaip(request: Request) -> JSONResponse:
+    """Submit IP-Adapter-guided generation (character identity via reference image).
+
+    Body: {
+      reference_image_url: "https://...",
+      prompt: "...",
+      ipadapter_weight: 0.7 (default),
+      ipadapter_file: "ip-adapter-plus_sdxl_vit-h.safetensors" (optional),
+      weight_type: "linear" (default, other: "ease in", "ease out", "style transfer"),
+      start_at: 0.0, end_at: 1.0,
+      standard: width, height, steps, cfg, seed, negative, loras, sampler, scheduler
+      endpoint_id (optional)
+    }
+    """
+    import traceback
+    try:
+        payload = await request.json()
+        reference_url = str(payload.get("reference_image_url") or "").strip()
+        prompt = str(payload.get("prompt") or "").strip()
+        if not reference_url:
+            return JSONResponse({"ok": False, "error": "reference_image_url required"}, status_code=400)
+        if not prompt:
+            return JSONResponse({"ok": False, "error": "prompt required"}, status_code=400)
+
+        endpoint_id = str(payload.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
+        if not endpoint_id:
+            return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=400)
+
+        seed = payload.get("seed")
+        loras = payload.get("loras") or []
+        reference_filename = "m_charaip_ref.png"
+
+        workflow = build_illustrious_ipadapter_workflow(
+            prompt=prompt,
+            reference_filename=reference_filename,
+            ipadapter_file=str(payload.get("ipadapter_file") or "ip-adapter-plus_sdxl_vit-h.safetensors"),
+            clip_vision_file=str(payload.get("clip_vision_file") or "clip_vision_h.safetensors"),
+            weight=float(payload.get("ipadapter_weight") or 0.7),
+            weight_type=str(payload.get("weight_type") or "linear"),
+            start_at=float(payload.get("start_at") or 0.0),
+            end_at=float(payload.get("end_at") or 1.0),
+            width=int(payload.get("width") or 1024),
+            height=int(payload.get("height") or 1536),
+            steps=int(payload.get("steps") or 30),
+            cfg=float(payload.get("cfg") or 7.0),
+            seed=int(seed) if seed is not None else None,
+            negative=str(payload.get("negative") or NEGATIVE_DEFAULT),
+            loras=loras,
+            sampler_name=str(payload.get("sampler_name") or "dpmpp_2m_sde"),
+            scheduler=str(payload.get("scheduler") or "karras"),
+        )
+
+        file_inputs = {
+            "60": {"url": reference_url, "filename": reference_filename, "field": "image"},
+        }
+
+        try:
+            remote_job_id = services._submit_job(endpoint_id, {
+                "workflow": workflow,
+                "file_inputs": file_inputs,
+                "timeout": 600,
+            })
+        except Exception as e:
+            err_str = str(e)
+            if "IPAdapter" in err_str or "ipadapter" in err_str.lower():
+                return JSONResponse({
+                    "ok": False,
+                    "error": "IP-Adapter node or model missing. See /api/m/charaip_dl_info.",
+                    "detail": err_str,
+                }, status_code=424)
+            return JSONResponse({"ok": False, "error": f"submit failed: {e}"}, status_code=502)
+
+        est = m_store.estimate_cost(
+            model="illustrious",
+            width=int(payload.get("width") or 1024),
+            height=int(payload.get("height") or 1536),
+            steps=int(payload.get("steps") or 30),
+        )
+        m_store.log_cost({
+            "model": "illustrious_charaip",
+            "width": int(payload.get("width") or 1024),
+            "height": int(payload.get("height") or 1536),
+            "steps": int(payload.get("steps") or 30),
+            "est_cost_usd": round(est, 4),
+            "remote_job_id": remote_job_id,
+        })
+
+        return JSONResponse({
+            "ok": True,
+            "remote_job_id": remote_job_id,
+            "endpoint_id": endpoint_id,
+            "est_cost_usd": round(est, 4),
+            "submitted_at": time.time(),
+        })
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/generate_charaip] ERROR: {e}\n{tb}", flush=True)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@router.get("/api/m/charaip_dl_info")
+async def m_charaip_dl_info() -> JSONResponse:
+    """DL info for IP-Adapter dependencies."""
+    return JSONResponse({
+        "ok": True,
+        "models": [
+            {
+                "filename": "ip-adapter-plus_sdxl_vit-h.safetensors",
+                "size_mb": 1050,
+                "source_url": "https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors",
+                "description": "IP-Adapter PLUS for SDXL (general identity preservation). Recommended default.",
+            },
+            {
+                "filename": "ip-adapter-plus-face_sdxl_vit-h.safetensors",
+                "size_mb": 1050,
+                "source_url": "https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus-face_sdxl_vit-h.safetensors",
+                "description": "IP-Adapter PLUS FACE for SDXL (face-focused, stronger identity lock).",
+            },
+        ],
+        "install_location": "/runpod-volume/models/ipadapter/",
+        "clip_vision_already_available": "clip_vision_h.safetensors",
+        "custom_nodes_required": ["ComfyUI_IPAdapter_plus"],
+    })
 
 
 # ============================================================

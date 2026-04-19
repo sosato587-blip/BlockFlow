@@ -1654,6 +1654,12 @@ function GenerateTab() {
   const [cnStrength, setCnStrength] = useState(0.7)
   const [cnCannyLow, setCnCannyLow] = useState(100)
   const [cnCannyHigh, setCnCannyHigh] = useState(200)
+  // Chara IP (IP-Adapter)
+  const [charaipEnabled, setCharaipEnabled] = useState(false)
+  const [charaipReferenceUrl, setCharaipReferenceUrl] = useState('')
+  const [charaipWeight, setCharaipWeight] = useState(0.7)
+  const [charaipWeightType, setCharaipWeightType] = useState<'linear' | 'ease in' | 'ease out' | 'style transfer'>('linear')
+  const [charaipFile, setCharaipFile] = useState('ip-adapter-plus_sdxl_vit-h.safetensors')
   // A/B compare mode
   const [abBatchId, setAbBatchId] = useState<string | null>(null)
   const [abJobs, setAbJobs] = useState<Array<{
@@ -1919,10 +1925,18 @@ function GenerateTab() {
         body.fps = fps
       }
 
-      // ControlNet routing: use dedicated endpoint if enabled
-      const useCn = cnEnabled && cnReferenceUrl.trim() && model === 'illustrious'
-      const endpoint = useCn ? '/api/m/generate_controlnet' : '/api/m/generate'
-      if (useCn) {
+      // Routing: ControlNet / Chara IP / normal (priority: Chara IP → ControlNet → normal)
+      const useCharaip = charaipEnabled && charaipReferenceUrl.trim() && model === 'illustrious'
+      const useCn = cnEnabled && cnReferenceUrl.trim() && model === 'illustrious' && !useCharaip
+      let endpoint = '/api/m/generate'
+      if (useCharaip) {
+        endpoint = '/api/m/generate_charaip'
+        body.reference_image_url = charaipReferenceUrl.trim()
+        body.ipadapter_weight = charaipWeight
+        body.weight_type = charaipWeightType
+        body.ipadapter_file = charaipFile
+      } else if (useCn) {
+        endpoint = '/api/m/generate_controlnet'
         body.reference_image_url = cnReferenceUrl.trim()
         body.controlnet_type = cnType
         body.controlnet_strength = cnStrength
@@ -2360,14 +2374,37 @@ function GenerateTab() {
         ))}
       </div>
 
-      {/* Prompt textarea */}
+      {/* Prompt textarea (positive + negative side by side for mobile) */}
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">Prompt</label>
+        <label className="text-xs font-medium text-muted-foreground">
+          Positive Prompt
+        </label>
         <Textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="Describe what you want to generate..."
-          className="min-h-[120px] text-sm"
+          className="min-h-[160px] text-sm resize-y"
+        />
+      </div>
+
+      <div className="space-y-1.5">
+        <label className="text-xs font-medium text-muted-foreground flex items-center gap-2">
+          Negative Prompt
+          <span className="text-[9px] text-muted-foreground/60">
+            (what to avoid — leave blank for default)
+          </span>
+        </label>
+        <Textarea
+          value={negativePrompt}
+          onChange={(e) => setNegativePrompt(e.target.value)}
+          placeholder={
+            model === 'illustrious'
+              ? 'default: lowres, bad anatomy, bad hands, text, blurry, worst quality...'
+              : model === 'z_image'
+                ? '(Z-Image works best with EMPTY negative — leave blank)'
+                : 'default: static, no movement, blurry, distorted...'
+          }
+          className="min-h-[80px] text-sm resize-y"
         />
       </div>
 
@@ -2614,13 +2651,88 @@ function GenerateTab() {
         </div>
       )}
 
-      {/* Advanced controls (collapsible — mirrors PC's KSampler + negative prompt) */}
+      {/* Chara IP / IP-Adapter section (Illustrious only) */}
+      {model === 'illustrious' && (
+        <div className="rounded-lg border border-pink-500/30 bg-pink-500/5 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-pink-300 flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={charaipEnabled}
+                onChange={(e) => setCharaipEnabled(e.target.checked)}
+                className="w-4 h-4 accent-pink-500"
+              />
+              Chara IP (reference identity injection)
+            </label>
+            {charaipEnabled && (
+              <Badge variant="outline" className="text-[9px] border-pink-500/40 text-pink-300">
+                IP-Adapter
+              </Badge>
+            )}
+          </div>
+          {charaipEnabled && (
+            <div className="space-y-2 pt-1">
+              <div className="space-y-1">
+                <label className="text-[10px] text-muted-foreground">Reference character image URL</label>
+                <Input
+                  value={charaipReferenceUrl}
+                  onChange={(e) => setCharaipReferenceUrl(e.target.value)}
+                  placeholder="Character's face / character sheet / reference photo"
+                  className="h-8 text-xs font-mono"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] text-muted-foreground">
+                  Weight: {charaipWeight.toFixed(2)} (0.5 = subtle, 1.0 = strong identity)
+                </label>
+                <Slider
+                  value={[charaipWeight]}
+                  onValueChange={([v]) => setCharaipWeight(v)}
+                  min={0.1}
+                  max={1.5}
+                  step={0.05}
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-[10px] text-muted-foreground">Weight Type</label>
+                  <Select value={charaipWeightType} onValueChange={(v) => setCharaipWeightType(v as 'linear' | 'ease in' | 'ease out' | 'style transfer')}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="linear" className="text-xs">linear (balanced)</SelectItem>
+                      <SelectItem value="ease in" className="text-xs">ease in (late)</SelectItem>
+                      <SelectItem value="ease out" className="text-xs">ease out (early)</SelectItem>
+                      <SelectItem value="style transfer" className="text-xs">style transfer</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] text-muted-foreground">Model</label>
+                  <Select value={charaipFile} onValueChange={setCharaipFile}>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ip-adapter-plus_sdxl_vit-h.safetensors" className="text-xs">PLUS (general)</SelectItem>
+                      <SelectItem value="ip-adapter-plus-face_sdxl_vit-h.safetensors" className="text-xs">PLUS FACE (face-focused)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <p className="text-[9px] text-muted-foreground italic">
+                Keeps reference character&apos;s face / style across generations. First use: DL ip-adapter-plus_sdxl_vit-h (~1GB).
+                {cnEnabled && ' ⚠ Chara IP overrides ControlNet if both enabled (combine in future phase).'}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Advanced controls (collapsible — mirrors PC's KSampler) */}
       <div className="rounded-lg border border-border/40 bg-card/20">
         <button
           onClick={() => setAdvancedOpen((v) => !v)}
           className="w-full flex items-center justify-between p-3 text-xs font-medium hover:bg-card/40 transition-colors"
         >
-          <span>Advanced (KSampler / Negative / Seed)</span>
+          <span>Advanced (KSampler / Seed)</span>
           <span className={`transition-transform ${advancedOpen ? 'rotate-90' : ''}`}>›</span>
         </button>
 
@@ -2731,23 +2843,7 @@ function GenerateTab() {
               )}
             </div>
 
-            {/* Negative prompt */}
-            <div className="space-y-1">
-              <label className="text-[10px] font-medium text-muted-foreground">
-                Negative Prompt (overrides default)
-              </label>
-              <Textarea
-                value={negativePrompt}
-                onChange={(e) => setNegativePrompt(e.target.value)}
-                placeholder={model === 'illustrious'
-                  ? '(leave blank to use default: lowres, bad anatomy, ...)'
-                  : model === 'z_image'
-                    ? '(Z-Image works best with EMPTY negative — leave blank)'
-                    : '(leave blank to use default)'
-                }
-                className="min-h-[60px] text-xs"
-              />
-            </div>
+            {/* Negative prompt moved out of Advanced (now always visible above) */}
           </div>
         )}
       </div>
