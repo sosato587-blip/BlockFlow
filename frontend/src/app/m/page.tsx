@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle, Repeat, Square } from 'lucide-react'
+import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle, Repeat, Square, Save, BookOpen, DollarSign, Trash2, User } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -104,11 +104,27 @@ export default function MobilePage() {
 // Header
 // ============================================================
 function Header() {
+  const [cost, setCost] = useState<CostSummary | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+    const load = async () => {
+      try {
+        const res = await fetch('/api/m/cost')
+        const data = await res.json()
+        if (mounted && data?.ok) setCost(data)
+      } catch {}
+    }
+    void load()
+    const t = setInterval(load, 30000)  // refresh every 30s
+    return () => { mounted = false; clearInterval(t) }
+  }, [])
+
   return (
     <header className="sticky top-0 z-20 border-b border-border/40 bg-background/85 backdrop-blur-md px-4 py-3">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-orange-400 to-pink-500 flex items-center justify-center">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-orange-400 to-pink-500 flex items-center justify-center shrink-0">
             <span className="text-white text-[10px] font-bold">BF</span>
           </div>
           <h1 className="text-base font-semibold tracking-tight">BlockFlow</h1>
@@ -116,12 +132,24 @@ function Header() {
             mobile
           </Badge>
         </div>
-        <Link
-          href="/generate"
-          className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1"
-        >
-          Desktop UI <ExternalLink className="w-3 h-3" />
-        </Link>
+        <div className="flex items-center gap-2">
+          {cost && (
+            <div
+              className="flex items-center gap-1 text-[10px] px-2 py-1 rounded-md bg-card/60 border border-border/40"
+              title={`Today: $${cost.today_usd.toFixed(3)} (${cost.today_count} gen) · Month: $${cost.month_usd.toFixed(3)}`}
+            >
+              <DollarSign className="w-2.5 h-2.5 text-emerald-400" />
+              <span className="font-mono">{cost.today_usd.toFixed(2)}</span>
+              <span className="text-muted-foreground">today</span>
+            </div>
+          )}
+          <Link
+            href="/generate"
+            className="text-[10px] text-muted-foreground hover:text-foreground transition-colors hidden sm:flex items-center gap-1"
+          >
+            Desktop <ExternalLink className="w-3 h-3" />
+          </Link>
+        </div>
       </div>
     </header>
   )
@@ -601,6 +629,39 @@ interface GenJob {
   error?: string
 }
 
+interface Preset {
+  id?: string
+  name: string
+  kind: 'template' | 'character'
+  model: ModelKind
+  prompt: string
+  negative?: string
+  loras?: Array<{ name: string; strength: number }>
+  width: number
+  height: number
+  steps: number
+  cfg: number
+  sampler_name: string
+  scheduler: string
+  seed_mode: 'random' | 'fixed'
+  seed_value?: number
+  tags?: string[]
+  character_name?: string
+  created_at?: string
+  updated_at?: string
+}
+
+interface CostSummary {
+  ok: boolean
+  total_usd: number
+  total_count: number
+  today_usd: number
+  today_count: number
+  month_usd: number
+  month_count: number
+  by_model: Record<string, { usd: number; count: number }>
+}
+
 const PROMPT_PRESETS: Record<ModelKind, { label: string; text: string }[]> = {
   z_image: [
     { label: 'Real woman portrait', text: '1girl, beautiful japanese woman, 22 years old, photorealistic, professional photography, golden hour, natural smile, cute face, slim body, white summer dress, soft natural light, film grain, sharp focus, 8k uhd' },
@@ -647,6 +708,18 @@ function GenerateTab() {
   const [looping, setLooping] = useState(false)
   const [loopCount, setLoopCount] = useState(0)
   const loopActiveRef = useRef(false)
+  // Loop budget cap (USD)
+  const [loopBudget, setLoopBudget] = useState(2.0)
+  const [loopSpent, setLoopSpent] = useState(0.0)
+  // Presets
+  const [presets, setPresets] = useState<Preset[]>([])
+  const [selectedPresetId, setSelectedPresetId] = useState<string>('')
+  const [saveOpen, setSaveOpen] = useState(false)
+  const [saveName, setSaveName] = useState('')
+  const [saveKind, setSaveKind] = useState<'template' | 'character'>('template')
+  const [saveCharName, setSaveCharName] = useState('')
+  // Per-submit cost estimate
+  const [costEstimate, setCostEstimate] = useState<number | null>(null)
 
   // Fetch LoRA options from inventory once
   useEffect(() => {
@@ -661,6 +734,38 @@ function GenerateTab() {
       }
     })()
   }, [])
+
+  // Load presets once
+  const loadPresets = useCallback(async () => {
+    try {
+      const res = await fetch('/api/m/presets')
+      const data = await res.json()
+      if (data?.ok) setPresets(data.presets || [])
+    } catch (e) {
+      console.error('preset fetch failed', e)
+    }
+  }, [])
+  useEffect(() => { void loadPresets() }, [loadPresets])
+
+  // Live cost estimate (debounced)
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({
+          model,
+          width: String(width),
+          height: String(height),
+          steps: String(steps),
+          length: String(length),
+          fps: String(fps),
+        })
+        const res = await fetch(`/api/m/cost/estimate?${params}`)
+        const data = await res.json()
+        if (data?.ok) setCostEstimate(data.est_cost_usd)
+      } catch {}
+    }, 300)
+    return () => clearTimeout(t)
+  }, [model, width, height, steps, length, fps])
 
   // Apply default dimensions + KSampler presets when model changes
   const onModelChange = (next: string) => {
@@ -699,8 +804,20 @@ function GenerateTab() {
     // Terminal states — stop polling; loop handler will trigger next iteration
     if (job.status === 'COMPLETED' || job.status === 'FAILED' || job.status === 'CANCELLED') {
       setPolling(false)
-      // If in loop mode and this completed, fire next generation after short delay
+      // If in loop mode and this completed, check budget then fire next
       if (loopActiveRef.current && job.status === 'COMPLETED') {
+        const cost = costEstimate || 0.04
+        const newSpent = loopSpent + cost
+        setLoopSpent(newSpent)
+
+        if (loopBudget > 0 && newSpent >= loopBudget) {
+          // Budget exceeded — stop loop
+          loopActiveRef.current = false
+          setLooping(false)
+          setError(`Loop stopped: budget $${loopBudget.toFixed(2)} reached ($${newSpent.toFixed(3)} spent)`)
+          return
+        }
+
         const timer = setTimeout(() => {
           if (loopActiveRef.current) {
             setLoopCount((c) => c + 1)
@@ -793,6 +910,7 @@ function GenerateTab() {
     loopActiveRef.current = false
     setLooping(false)
     setLoopCount(0)
+    setLoopSpent(0)
     void submitInternal()
   }
 
@@ -800,12 +918,101 @@ function GenerateTab() {
     loopActiveRef.current = true
     setLooping(true)
     setLoopCount(1)
+    setLoopSpent(0)
     void submitInternal()
   }
 
   const stopLoop = () => {
     loopActiveRef.current = false
     setLooping(false)
+  }
+
+  // Preset handlers
+  const applyPreset = (p: Preset) => {
+    setModel(p.model)
+    setPrompt(p.prompt)
+    setNegativePrompt(p.negative || '')
+    setWidth(p.width)
+    setHeight(p.height)
+    setSteps(p.steps)
+    setCfg(p.cfg)
+    setSamplerName(p.sampler_name)
+    setScheduler(p.scheduler)
+    setSeedMode(p.seed_mode)
+    if (p.seed_value != null) setSeedValue(p.seed_value)
+    setLoras(
+      (p.loras || []).map((l) => ({
+        id: crypto.randomUUID?.() || String(Date.now() + Math.random()),
+        name: l.name,
+        strength: l.strength,
+      }))
+    )
+    setSelectedPresetId(p.id || '')
+  }
+
+  const onPresetSelect = (id: string) => {
+    setSelectedPresetId(id)
+    if (!id || id === '__new__') return
+    const p = presets.find((x) => x.id === id)
+    if (p) applyPreset(p)
+  }
+
+  const savePreset = async () => {
+    if (!saveName.trim()) {
+      setError('Preset name required')
+      return
+    }
+    const body: Preset = {
+      name: saveName.trim(),
+      kind: saveKind,
+      model,
+      prompt,
+      negative: negativePrompt,
+      loras: loras
+        .filter((l) => l.name && l.name !== '__none__')
+        .map((l) => ({ name: l.name, strength: l.strength })),
+      width, height, steps, cfg,
+      sampler_name: samplerName,
+      scheduler,
+      seed_mode: saveKind === 'character' ? 'fixed' : seedMode,
+      seed_value: seedValue,
+    }
+    if (saveKind === 'character' && saveCharName.trim()) {
+      body.character_name = saveCharName.trim()
+    }
+    try {
+      const res = await fetch('/api/m/presets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!data?.ok) {
+        setError(data?.error || 'save failed')
+        return
+      }
+      setSaveOpen(false)
+      setSaveName('')
+      setSaveCharName('')
+      setSelectedPresetId(data.preset.id)
+      await loadPresets()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  const deleteSelectedPreset = async () => {
+    if (!selectedPresetId || selectedPresetId === '__new__') return
+    const p = presets.find((x) => x.id === selectedPresetId)
+    if (!p) return
+    if (!confirm(`Delete preset "${p.name}"?`)) return
+    try {
+      await fetch(`/api/m/presets/${selectedPresetId}`, { method: 'DELETE' })
+      setSelectedPresetId('')
+      await loadPresets()
+    } catch (e) {
+      console.error('delete failed', e)
+    }
   }
 
   // Output extraction: image URL or video URL
@@ -815,8 +1022,121 @@ function GenerateTab() {
   const isVideoOutput = model === 'wan_i2v' || !!videoUrl
   const finalOutputUrl = videoUrl || outputUrl
 
+  const selectedPreset = presets.find((p) => p.id === selectedPresetId)
+
   return (
     <div className="px-3 py-3 space-y-4">
+      {/* Preset picker (Template Library + Character Anchor) */}
+      <div className="space-y-1.5 rounded-lg border border-purple-500/30 bg-purple-500/5 p-3">
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-medium text-purple-300 flex items-center gap-1">
+            <BookOpen className="w-3 h-3" /> Preset Library
+          </label>
+          <div className="flex items-center gap-1">
+            {selectedPresetId && selectedPresetId !== '__new__' && (
+              <button
+                onClick={deleteSelectedPreset}
+                className="text-[10px] px-1.5 py-0.5 rounded border border-red-500/30 text-red-300 hover:bg-red-500/10"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            )}
+            <button
+              onClick={() => setSaveOpen(true)}
+              className="text-[10px] px-2 py-0.5 rounded border border-purple-500/40 bg-purple-500/20 text-purple-200 hover:bg-purple-500/30 flex items-center gap-1"
+            >
+              <Save className="w-3 h-3" /> Save current
+            </button>
+          </div>
+        </div>
+        <Select value={selectedPresetId || '__none__'} onValueChange={(v) => onPresetSelect(v === '__none__' ? '' : v)}>
+          <SelectTrigger className="w-full h-9 text-xs">
+            <SelectValue placeholder="(load a preset...)" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__" className="text-xs text-muted-foreground">(none)</SelectItem>
+            {/* Characters first */}
+            {presets.filter((p) => p.kind === 'character').length > 0 && (
+              <>
+                {presets
+                  .filter((p) => p.kind === 'character')
+                  .map((p) => (
+                    <SelectItem key={p.id} value={p.id || ''} className="text-xs">
+                      <span className="inline-flex items-center gap-1">
+                        <User className="w-3 h-3 text-orange-400" />
+                        {p.character_name || p.name}
+                      </span>
+                    </SelectItem>
+                  ))}
+              </>
+            )}
+            {presets
+              .filter((p) => p.kind === 'template')
+              .map((p) => (
+                <SelectItem key={p.id} value={p.id || ''} className="text-xs">
+                  {p.name}
+                </SelectItem>
+              ))}
+          </SelectContent>
+        </Select>
+        {selectedPreset && (
+          <p className="text-[9px] text-muted-foreground">
+            {selectedPreset.kind === 'character' ? '🎭 Character' : '📋 Template'}
+            {' · '}{selectedPreset.model}
+            {' · '}{selectedPreset.width}×{selectedPreset.height}
+            {selectedPreset.seed_mode === 'fixed' && ` · seed ${selectedPreset.seed_value}`}
+          </p>
+        )}
+      </div>
+
+      {/* Save Preset dialog */}
+      {saveOpen && (
+        <div className="rounded-lg border border-purple-500/40 bg-purple-500/10 p-3 space-y-2">
+          <div className="text-xs font-medium text-purple-200">Save current settings as...</div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setSaveKind('template')}
+              className={`text-[10px] px-2 py-1.5 rounded border ${saveKind === 'template' ? 'border-purple-400 bg-purple-500/30 text-purple-100' : 'border-border/40 text-muted-foreground'}`}
+            >
+              📋 Template (random seed OK)
+            </button>
+            <button
+              onClick={() => setSaveKind('character')}
+              className={`text-[10px] px-2 py-1.5 rounded border ${saveKind === 'character' ? 'border-orange-400 bg-orange-500/30 text-orange-100' : 'border-border/40 text-muted-foreground'}`}
+            >
+              🎭 Character (fixed seed)
+            </button>
+          </div>
+          <Input
+            value={saveName}
+            onChange={(e) => setSaveName(e.target.value)}
+            placeholder="Preset name (e.g. 'Real woman cafe')"
+            className="h-8 text-xs"
+          />
+          {saveKind === 'character' && (
+            <>
+              <Input
+                value={saveCharName}
+                onChange={(e) => setSaveCharName(e.target.value)}
+                placeholder="Character name (e.g. 'Rin')"
+                className="h-8 text-xs"
+              />
+              <p className="text-[9px] text-orange-300">
+                Seed will be locked to {seedValue} — this character&apos;s face is reproducible.
+              </p>
+            </>
+          )}
+          <div className="flex gap-2">
+            <Button onClick={savePreset} size="sm" className="flex-1 h-8 text-xs bg-purple-500 hover:bg-purple-600 text-white">
+              Save
+            </Button>
+            <Button onClick={() => { setSaveOpen(false); setSaveName(''); setSaveCharName('') }} variant="outline" size="sm" className="h-8 text-xs">
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Model picker */}
       <div className="space-y-1.5">
         <label className="text-xs font-medium text-muted-foreground">Model</label>
@@ -1160,48 +1480,83 @@ function GenerateTab() {
 
       {/* Submit buttons — Generate (single) / Loop (continuous) / Stop (when looping) */}
       <div className="space-y-2">
-        {!looping ? (
-          <div className="grid grid-cols-3 gap-2">
-            <Button
-              onClick={submit}
-              disabled={submitting || !prompt.trim()}
-              className="col-span-2 h-12 text-sm font-semibold bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white"
-            >
-              {submitting ? (
-                <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Submitting...</>
-              ) : (
-                <><Sparkles className="w-4 h-4 mr-2" /> Generate</>
-              )}
-            </Button>
-            <Button
-              onClick={startLoop}
-              disabled={submitting || !prompt.trim() || seedMode === 'fixed'}
-              variant="outline"
-              className="h-12 text-xs font-semibold border-purple-500/40 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20"
-              title={seedMode === 'fixed' ? 'Loop requires random seed' : 'Continuous generation with new seed each iteration'}
-            >
-              <Repeat className="w-4 h-4 mr-1" /> Loop
-            </Button>
+        {/* Cost estimate pre-submit */}
+        {costEstimate !== null && !looping && (
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1">
+            <span>Est. cost per generation:</span>
+            <span className="font-mono text-emerald-400">
+              ${costEstimate.toFixed(4)} USD
+            </span>
           </div>
-        ) : (
-          <Button
-            onClick={stopLoop}
-            className="w-full h-12 text-sm font-semibold bg-gradient-to-r from-red-500 to-purple-500 hover:from-red-600 hover:to-purple-600 text-white animate-pulse"
-          >
-            <Square className="w-4 h-4 mr-2 fill-white" />
-            Stop Loop (iteration {loopCount})
-          </Button>
         )}
 
-        {seedMode === 'fixed' && (
+        {!looping ? (
+          <>
+            <div className="grid grid-cols-3 gap-2">
+              <Button
+                onClick={submit}
+                disabled={submitting || !prompt.trim()}
+                className="col-span-2 h-12 text-sm font-semibold bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white"
+              >
+                {submitting ? (
+                  <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Submitting...</>
+                ) : (
+                  <><Sparkles className="w-4 h-4 mr-2" /> Generate</>
+                )}
+              </Button>
+              <Button
+                onClick={startLoop}
+                disabled={submitting || !prompt.trim() || seedMode === 'fixed'}
+                variant="outline"
+                className="h-12 text-xs font-semibold border-purple-500/40 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20"
+                title={seedMode === 'fixed' ? 'Loop requires random seed' : 'Continuous generation with new seed each iteration'}
+              >
+                <Repeat className="w-4 h-4 mr-1" /> Loop
+              </Button>
+            </div>
+            {/* Budget cap input (shown near Loop button) */}
+            <div className="flex items-center gap-2 px-1">
+              <label className="text-[10px] text-muted-foreground flex items-center gap-1 shrink-0">
+                <DollarSign className="w-3 h-3" /> Loop budget:
+              </label>
+              <Input
+                type="number"
+                value={loopBudget}
+                onChange={(e) => setLoopBudget(parseFloat(e.target.value) || 0)}
+                className="h-7 text-[10px] font-mono flex-1"
+                min={0}
+                max={100}
+                step={0.5}
+              />
+              <span className="text-[10px] text-muted-foreground">USD (0 = no cap)</span>
+            </div>
+          </>
+        ) : (
+          <>
+            <Button
+              onClick={stopLoop}
+              className="w-full h-12 text-sm font-semibold bg-gradient-to-r from-red-500 to-purple-500 hover:from-red-600 hover:to-purple-600 text-white animate-pulse"
+            >
+              <Square className="w-4 h-4 mr-2 fill-white" />
+              Stop Loop (iter {loopCount} · ${loopSpent.toFixed(3)})
+            </Button>
+            {loopBudget > 0 && (
+              <div className="h-1.5 rounded-full bg-card overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-500 to-amber-500 transition-all"
+                  style={{ width: `${Math.min(100, (loopSpent / loopBudget) * 100)}%` }}
+                />
+              </div>
+            )}
+            <p className="text-[10px] text-purple-300 text-center">
+              🔁 Loop active · {loopSpent.toFixed(3)} / {loopBudget > 0 ? loopBudget.toFixed(2) : '∞'} USD
+            </p>
+          </>
+        )}
+
+        {seedMode === 'fixed' && !looping && (
           <p className="text-[9px] text-muted-foreground italic text-center">
             Loop disabled: seed mode is &quot;Fixed&quot; — switch to Random in Advanced to enable
-          </p>
-        )}
-
-        {looping && (
-          <p className="text-[10px] text-purple-300 text-center">
-            🔁 Loop active — new random seed each generation. Tap Stop to halt.
           </p>
         )}
       </div>
