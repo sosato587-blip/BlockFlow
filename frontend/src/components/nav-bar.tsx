@@ -3,7 +3,8 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { Sparkles, FolderOpen, FileDown, FilePlus2, ChevronDown, Files, FileUp, X, ImageIcon, Smartphone } from 'lucide-react'
+import { Sparkles, FolderOpen, FileDown, FilePlus2, ChevronDown, Files, FileUp, X, ImageIcon, Smartphone, DollarSign, BookOpen, Layers, Save, RefreshCw } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,8 +23,54 @@ const NAV_ITEMS = [
   { href: '/generate', label: 'Generate', icon: Sparkles },
   { href: '/artifacts', label: 'Artifacts', icon: FolderOpen },
   { href: '/gallery', label: 'Gallery', icon: ImageIcon },
+  { href: '/presets', label: 'Presets', icon: BookOpen },
+  { href: '/batches', label: 'Batches', icon: Layers },
+  { href: '/publications', label: 'Pubs', icon: Save },
+  { href: '/schedules', label: 'Sched', icon: RefreshCw },
+  { href: '/cost', label: 'Cost', icon: DollarSign },
   { href: '/m', label: 'Mobile', icon: Smartphone },
 ]
+
+interface CostSummaryNav {
+  today_usd: number
+  today_count: number
+  month_usd: number
+}
+
+function CostBadge() {
+  const [cost, setCost] = useState<CostSummaryNav | null>(null)
+  useEffect(() => {
+    let mounted = true
+    const load = async () => {
+      try {
+        const res = await fetch('/api/m/cost')
+        const data = await res.json()
+        if (mounted && data?.ok) {
+          setCost({
+            today_usd: data.today_usd || 0,
+            today_count: data.today_count || 0,
+            month_usd: data.month_usd || 0,
+          })
+        }
+      } catch {}
+    }
+    void load()
+    const t = setInterval(load, 30000)
+    return () => { mounted = false; clearInterval(t) }
+  }, [])
+  if (!cost) return null
+  return (
+    <Link
+      href="/cost"
+      className="flex items-center gap-1 text-[11px] px-2 py-1 rounded-md bg-card/60 border border-border/40 hover:border-emerald-500/40 transition-colors"
+      title={`Today: $${cost.today_usd.toFixed(3)} (${cost.today_count} generations) · Month: $${cost.month_usd.toFixed(3)}`}
+    >
+      <DollarSign className="w-3 h-3 text-emerald-400" />
+      <span className="font-mono">{cost.today_usd.toFixed(2)}</span>
+      <span className="text-muted-foreground">today</span>
+    </Link>
+  )
+}
 
 export function NavBar() {
   const pathname = usePathname()
@@ -204,6 +251,8 @@ export function NavBar() {
         })}
 
         <div className="w-px h-4 bg-border/50" />
+
+        <CostBadge />
 
         <a
           href="https://discord.gg/rZ885pVdTM"
