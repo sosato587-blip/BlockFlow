@@ -1510,7 +1510,8 @@ function GenerateTab() {
     setPolling(true)
     const t = setInterval(async () => {
       try {
-        const res = await fetch(`/api/m/status/${job.remote_job_id}`)
+        const qs = endpointId.trim() ? `?endpoint_id=${encodeURIComponent(endpointId.trim())}` : ''
+        const res = await fetch(`/api/m/status/${job.remote_job_id}${qs}`)
         const data = await res.json()
         if (data?.ok) {
           setJob({
@@ -1518,6 +1519,14 @@ function GenerateTab() {
             status: String(data.status || 'UNKNOWN').toUpperCase(),
             output: data.output,
             error: data.output?.error || data.error,
+          })
+        } else {
+          console.error('status failed', data)
+          // Show error in job state so user sees it
+          setJob({
+            remote_job_id: job.remote_job_id,
+            status: 'ERROR',
+            error: data?.error || 'unknown status error',
           })
         }
       } catch (e) {

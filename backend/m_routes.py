@@ -481,19 +481,36 @@ async def m_generate(request: Request) -> JSONResponse:
 
 
 @router.get("/api/m/status/{remote_job_id}")
-async def m_status(remote_job_id: str) -> JSONResponse:
-    """Check status of a RunPod job by its remote id."""
-    endpoint_id = config.RUNPOD_ENDPOINT_ID
-    if not endpoint_id:
-        return JSONResponse({"ok": False, "error": "RUNPOD_ENDPOINT_ID not configured"}, status_code=500)
+async def m_status(remote_job_id: str, endpoint_id: str = "") -> JSONResponse:
+    """Check status of a RunPod job by its remote id.
 
-    url = f"{config.RUNPOD_API_BASE}/{endpoint_id}/status/{remote_job_id}"
+    Accepts optional endpoint_id query param; falls back to backend config.
+    """
+    import traceback
     try:
-        resp = services._request_json("GET", url, None, timeout=config.HTTP_TIMEOUT_SEC)
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": f"status fetch failed: {e}"}, status_code=502)
+        eid = (endpoint_id or config.RUNPOD_ENDPOINT_ID or "").strip()
+        if not eid:
+            return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=500)
 
-    return JSONResponse({"ok": True, **resp})
+        url = f"{config.RUNPOD_API_BASE}/{eid}/status/{remote_job_id}"
+        try:
+            resp = services._request_json("GET", url, None, timeout=config.HTTP_TIMEOUT_SEC)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"runpod status call failed: {e}"}, status_code=502)
+
+        # Merge carefully: resp might have its own 'ok' field from RunPod
+        out: dict[str, Any] = {"ok": True}
+        if isinstance(resp, dict):
+            out.update(resp)
+            out["ok"] = True  # force success marker after merge
+        return JSONResponse(out)
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/status] ERROR for {remote_job_id}: {e}\n{tb}", flush=True)
+        return JSONResponse(
+            {"ok": False, "error": f"{type(e).__name__}: {e}", "traceback": tb},
+            status_code=500,
+        )
 
 
 # ============================================================
