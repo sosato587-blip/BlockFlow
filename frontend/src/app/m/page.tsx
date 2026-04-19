@@ -628,8 +628,7 @@ function GenerateTab() {
   const [job, setJob] = useState<GenJob | null>(null)
   const [polling, setPolling] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [loraName, setLoraName] = useState<string>('__none__')
-  const [loraStrength, setLoraStrength] = useState(0.8)
+  const [loras, setLoras] = useState<Array<{ id: string; name: string; strength: number }>>([])
   const [loraOptions, setLoraOptions] = useState<string[]>([])
   // Wan I2V specific
   const [imageUrl, setImageUrl] = useState('')
@@ -706,8 +705,10 @@ function GenerateTab() {
     setJob(null)
     try {
       const body: Record<string, unknown> = { model, prompt, width, height }
-      if (loraName !== '__none__' && model !== 'wan_i2v') {
-        body.loras = [{ name: loraName, strength: loraStrength }]
+      if (loras.length > 0 && model !== 'wan_i2v') {
+        body.loras = loras
+          .filter((l) => l.name && l.name !== '__none__')
+          .map((l) => ({ name: l.name, strength: l.strength }))
       }
       if (model === 'wan_i2v') {
         body.image_url = imageUrl.trim()
@@ -798,38 +799,97 @@ function GenerateTab() {
         />
       </div>
 
-      {/* LoRA selector (image gen only — Wan I2V skips LoRA in this MVP) */}
+      {/* LoRA selector — multi-LoRA (image gen only; Wan I2V skips for now) */}
       {loraOptions.length > 0 && model !== 'wan_i2v' && (
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-muted-foreground">LoRA (optional)</label>
-          <Select value={loraName} onValueChange={setLoraName}>
-            <SelectTrigger className="w-full h-9 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__none__">(none)</SelectItem>
-              {loraOptions.map((name) => (
-                <SelectItem key={name} value={name} className="text-xs">
-                  {name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {loraName !== '__none__' && (
-            <div className="flex items-center gap-2">
-              <Slider
-                value={[loraStrength]}
-                onValueChange={([v]) => setLoraStrength(v)}
-                min={0}
-                max={2}
-                step={0.05}
-                className="flex-1"
-              />
-              <span className="text-[10px] font-mono text-muted-foreground w-10 text-right">
-                {loraStrength.toFixed(2)}
-              </span>
-            </div>
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium text-muted-foreground">
+              LoRAs (optional, {loras.length} added)
+            </label>
+            <button
+              onClick={() =>
+                setLoras((prev) => [
+                  ...prev,
+                  {
+                    id: crypto.randomUUID?.() || String(Date.now() + Math.random()),
+                    name: '__none__',
+                    strength: 0.8,
+                  },
+                ])
+              }
+              disabled={loras.length >= 8}
+              className="text-[10px] px-2 py-1 rounded-md border border-orange-500/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 transition-colors disabled:opacity-40"
+            >
+              + Add LoRA
+            </button>
+          </div>
+
+          {loras.length === 0 && (
+            <p className="text-[10px] text-muted-foreground italic">
+              No LoRAs selected. Tap &quot;+ Add LoRA&quot; to stack quality boosters, characters, or concepts.
+            </p>
           )}
+
+          {loras.map((lora, idx) => (
+            <div
+              key={lora.id}
+              className="space-y-1.5 rounded-md border border-border/40 bg-card/30 p-2"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono text-muted-foreground w-5 shrink-0">
+                  {idx + 1}.
+                </span>
+                <Select
+                  value={lora.name}
+                  onValueChange={(v) =>
+                    setLoras((prev) =>
+                      prev.map((l) => (l.id === lora.id ? { ...l, name: v } : l))
+                    )
+                  }
+                >
+                  <SelectTrigger className="flex-1 min-w-0 h-8 text-xs">
+                    <SelectValue placeholder="(select LoRA)" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">(none)</SelectItem>
+                    {loraOptions.map((name) => (
+                      <SelectItem key={name} value={name} className="text-xs">
+                        {name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <button
+                  onClick={() =>
+                    setLoras((prev) => prev.filter((l) => l.id !== lora.id))
+                  }
+                  className="shrink-0 h-7 w-7 rounded-md flex items-center justify-center hover:bg-red-500/20 text-muted-foreground hover:text-red-400 transition-colors"
+                  aria-label="Remove LoRA"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {lora.name !== '__none__' && (
+                <div className="flex items-center gap-2">
+                  <Slider
+                    value={[lora.strength]}
+                    onValueChange={([v]) =>
+                      setLoras((prev) =>
+                        prev.map((l) => (l.id === lora.id ? { ...l, strength: v } : l))
+                      )
+                    }
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    className="flex-1"
+                  />
+                  <span className="text-[10px] font-mono text-muted-foreground w-10 text-right">
+                    {lora.strength.toFixed(2)}
+                  </span>
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
 
