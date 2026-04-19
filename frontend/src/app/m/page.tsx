@@ -60,7 +60,7 @@ async function fetchR2Images(
 // ============================================================
 // Types
 // ============================================================
-type TabId = 'generate' | 'gallery' | 'favorites' | 'queue' | 'models'
+type TabId = 'generate' | 'gallery' | 'favorites' | 'queue' | 'models' | 'batch' | 'publications' | 'schedules'
 
 interface RunRecord {
   id: string
@@ -76,9 +76,12 @@ interface RunRecord {
 // ============================================================
 const TABS: { id: TabId; label: string; Icon: typeof ImageIcon }[] = [
   { id: 'generate', label: 'Gen', Icon: Sparkles },
+  { id: 'batch', label: 'Batch', Icon: Layers },
   { id: 'gallery', label: 'Gallery', Icon: ImageIcon },
   { id: 'favorites', label: 'Favs', Icon: Heart },
   { id: 'queue', label: 'Queue', Icon: ListTodo },
+  { id: 'publications', label: 'Pub', Icon: Save },
+  { id: 'schedules', label: 'Sched', Icon: RefreshCw },
   { id: 'models', label: 'Models', Icon: Database },
 ]
 
@@ -90,9 +93,12 @@ export default function MobilePage() {
       <TabBar current={tab} onChange={setTab} />
       <main className="flex-1 overflow-y-auto pb-24">
         {tab === 'generate' && <GenerateTab />}
+        {tab === 'batch' && <BatchTab />}
         {tab === 'gallery' && <GalleryTab />}
         {tab === 'favorites' && <FavoritesTab />}
         {tab === 'queue' && <QueueTab />}
+        {tab === 'publications' && <PublicationsTab />}
+        {tab === 'schedules' && <SchedulesTab />}
         {tab === 'models' && <ModelsTab />}
       </main>
       <BottomLink />
@@ -160,15 +166,15 @@ function Header() {
 // ============================================================
 function TabBar({ current, onChange }: { current: TabId; onChange: (id: TabId) => void }) {
   return (
-    <nav className="sticky top-[57px] z-10 border-b border-border/40 bg-background/85 backdrop-blur-md">
-      <div className="grid grid-cols-5">
+    <nav className="sticky top-[57px] z-10 border-b border-border/40 bg-background/85 backdrop-blur-md overflow-x-auto scrollbar-hide">
+      <div className="flex min-w-full">
         {TABS.map(({ id, label, Icon }) => {
           const active = current === id
           return (
             <button
               key={id}
               onClick={() => onChange(id)}
-              className={`relative flex flex-col items-center justify-center gap-0.5 py-2.5 text-[10px] font-medium transition-colors ${
+              className={`relative flex flex-col items-center justify-center gap-0.5 py-2.5 px-4 text-[10px] font-medium transition-colors shrink-0 flex-1 min-w-[65px] ${
                 active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
               }`}
             >
@@ -600,6 +606,590 @@ function BottomLink() {
         </Link>
       </div>
     </footer>
+  )
+}
+
+// ============================================================
+// Batch Tab — prompt variations (bulk generation)
+// ============================================================
+
+interface BatchJob {
+  variation_index: number
+  remote_job_id: string
+  status: string
+  prompt?: string
+  output_url?: string
+  est_cost_usd?: number
+  last_error?: string
+}
+
+interface BatchRecord {
+  id: string
+  name: string
+  preset_id?: string | null
+  base?: Record<string, unknown>
+  variations?: Array<Record<string, unknown>>
+  jobs?: BatchJob[]
+  status?: string
+  created_at?: string
+  errors?: string[] | null
+}
+
+function BatchTab() {
+  const [batches, setBatches] = useState<BatchRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [newOpen, setNewOpen] = useState(false)
+  const [presets, setPresets] = useState<Preset[]>([])
+  const [newPresetId, setNewPresetId] = useState('')
+  const [newOverlays, setNewOverlays] = useState('')  // one per line
+  const [newName, setNewName] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [bRes, pRes] = await Promise.all([
+        fetch('/api/m/batches'),
+        fetch('/api/m/presets'),
+      ])
+      const b = await bRes.json()
+      const p = await pRes.json()
+      if (b?.ok) setBatches((b.batches || []).reverse())
+      if (p?.ok) setPresets(p.presets || [])
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  // Auto-poll active batches
+  useEffect(() => {
+    const hasActive = batches.some((b) =>
+      b.status === 'running' || b.status === 'submitting'
+    )
+    if (!hasActive) return
+    const t = setInterval(async () => {
+      for (const b of batches) {
+        if (b.status === 'running' || b.status === 'submitting') {
+          try {
+            const res = await fetch(`/api/m/batch/${b.id}`)
+            const data = await res.json()
+            if (data?.ok) {
+              setBatches((prev) => prev.map((x) => x.id === b.id ? data.batch : x))
+            }
+          } catch {}
+        }
+      }
+    }, 6000)
+    return () => clearInterval(t)
+  }, [batches])
+
+  const submitBatch = async () => {
+    const preset = presets.find((p) => p.id === newPresetId)
+    if (!preset) {
+      setError('Select a preset as base')
+      return
+    }
+    const overlays = newOverlays
+      .split('\n')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+    if (overlays.length === 0) {
+      setError('Add at least 1 variation (one prompt_overlay per line)')
+      return
+    }
+    setError(null)
+    setSubmitting(true)
+    try {
+      const base = {
+        model: preset.model,
+        prompt: preset.prompt,
+        negative: preset.negative,
+        loras: preset.loras,
+        width: preset.width, height: preset.height,
+        steps: preset.steps, cfg: preset.cfg,
+        sampler_name: preset.sampler_name,
+        scheduler: preset.scheduler,
+      }
+      const variations = overlays.map((o) => ({ prompt_overlay: o }))
+      const res = await fetch('/api/m/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newName || `${preset.name} × ${overlays.length}`,
+          preset_id: preset.id,
+          base, variations,
+        }),
+      })
+      const data = await res.json()
+      if (!data?.ok) {
+        setError(data?.error || 'batch failed')
+        return
+      }
+      setNewOpen(false)
+      setNewName('')
+      setNewOverlays('')
+      setNewPresetId('')
+      await load()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const deleteBatch = async (id: string) => {
+    if (!confirm('Delete this batch record? (Generated images stay in Gallery)')) return
+    try {
+      await fetch(`/api/m/batch/${id}`, { method: 'DELETE' })
+      await load()
+    } catch {}
+  }
+
+  return (
+    <div className="px-3 py-3 space-y-3">
+      {!newOpen ? (
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-muted-foreground">
+            {loading ? 'Loading...' : `${batches.length} batches`}
+          </h2>
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" onClick={load} disabled={loading} className="h-7 px-2 text-xs">
+              <RefreshCw className={`w-3 h-3 mr-1 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+            <Button
+              onClick={() => setNewOpen(true)}
+              size="sm"
+              className="h-7 px-3 text-xs bg-gradient-to-r from-orange-500 to-pink-500 text-white"
+            >
+              + New
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-orange-500/40 bg-orange-500/5 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-orange-300">New Batch</span>
+            <button onClick={() => { setNewOpen(false); setError(null) }} className="text-muted-foreground hover:text-red-400">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-medium text-muted-foreground">Base Preset (required)</label>
+            <Select value={newPresetId} onValueChange={setNewPresetId}>
+              <SelectTrigger className="h-9 text-xs">
+                <SelectValue placeholder="(pick a preset first)" />
+              </SelectTrigger>
+              <SelectContent>
+                {presets.length === 0 ? (
+                  <SelectItem value="__none__" disabled className="text-xs">
+                    No presets yet — save one from Generate tab first
+                  </SelectItem>
+                ) : (
+                  presets.map((p) => (
+                    <SelectItem key={p.id} value={p.id || ''} className="text-xs">
+                      {p.kind === 'character' ? '🎭 ' : '📋 '}{p.name}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-medium text-muted-foreground">
+              Variations (one prompt_overlay per line)
+            </label>
+            <Textarea
+              value={newOverlays}
+              onChange={(e) => setNewOverlays(e.target.value)}
+              placeholder={`white summer dress, park, sunny\nred cocktail dress, rooftop bar, night\nkimono, temple, autumn leaves\n...`}
+              className="min-h-[120px] text-xs font-mono"
+            />
+            <p className="text-[9px] text-muted-foreground">
+              Each line becomes a variation appended to the preset&apos;s base prompt.
+              Est. total: ${(presets.find((p) => p.id === newPresetId)?.model === 'z_image' ? 0.04 : 0.04) * newOverlays.split('\n').filter((l) => l.trim()).length}
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-[10px] font-medium text-muted-foreground">Batch name (optional)</label>
+            <Input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="e.g. 'Rin variations for cafe series'"
+              className="h-8 text-xs"
+            />
+          </div>
+          {error && <div className="text-[10px] text-red-400">{error}</div>}
+          <Button
+            onClick={submitBatch}
+            disabled={submitting || !newPresetId || !newOverlays.trim()}
+            className="w-full h-10 text-xs bg-gradient-to-r from-orange-500 to-pink-500 text-white"
+          >
+            {submitting ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Submitting...</> : <><Sparkles className="w-3 h-3 mr-1" />Submit Batch</>}
+          </Button>
+        </div>
+      )}
+
+      {!loading && batches.length === 0 && !newOpen && (
+        <EmptyState icon={<Layers className="w-8 h-8" />} message="No batches yet. Tap + New to generate multiple variations." />
+      )}
+
+      <div className="space-y-2">
+        {batches.map((b) => {
+          const jobs = b.jobs || []
+          const done = jobs.filter((j) => j.status === 'COMPLETED').length
+          const failed = jobs.filter((j) => ['FAILED', 'CANCELLED', 'TIMED_OUT'].includes(j.status)).length
+          const running = jobs.length - done - failed
+          const isExpanded = expandedId === b.id
+
+          return (
+            <div key={b.id} className="rounded-lg border border-border/40 bg-card/30 overflow-hidden">
+              <button
+                onClick={() => setExpandedId(isExpanded ? null : b.id)}
+                className="w-full flex items-center justify-between p-3 hover:bg-card/50 transition-colors text-left"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-medium truncate">{b.name}</div>
+                  <div className="text-[10px] text-muted-foreground font-mono">
+                    {done}/{jobs.length} done {failed > 0 && `(${failed} failed)`} · {b.status}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {running > 0 && <Loader2 className="w-3 h-3 animate-spin text-cyan-400" />}
+                  <span className={`transition-transform ${isExpanded ? 'rotate-90' : ''}`}>›</span>
+                </div>
+              </button>
+              {isExpanded && (
+                <div className="border-t border-border/40 p-3 space-y-2">
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {jobs.map((j, i) => {
+                      const isDone = j.status === 'COMPLETED' && j.output_url
+                      return (
+                        <div key={j.remote_job_id} className="aspect-[9/16] rounded-md overflow-hidden bg-card border border-border/40 relative">
+                          <div className="absolute top-1 left-1 z-10 text-[9px] font-bold text-white bg-black/60 px-1 rounded">
+                            {i + 1}
+                          </div>
+                          {isDone ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={j.output_url} alt={`var ${i}`} className="w-full h-full object-cover" loading="lazy" />
+                          ) : (
+                            <div className="flex items-center justify-center h-full text-[9px] text-muted-foreground">
+                              {j.status}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <button
+                    onClick={() => deleteBatch(b.id)}
+                    className="text-[10px] text-red-400 hover:underline"
+                  >
+                    Delete batch record
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// ============================================================
+// Publications Tab — track where images are published
+// ============================================================
+
+interface Publication {
+  id: string
+  name?: string
+  image_url: string
+  title?: string
+  description?: string
+  platforms?: Array<{ platform: string; status: string; url?: string; published_at?: string }>
+  tags?: string[]
+  notes?: string
+  created_at?: string
+}
+
+function PublicationsTab() {
+  const [pubs, setPubs] = useState<Publication[]>([])
+  const [loading, setLoading] = useState(true)
+  const [newOpen, setNewOpen] = useState(false)
+  const [newImageUrl, setNewImageUrl] = useState('')
+  const [newTitle, setNewTitle] = useState('')
+  const [newPlatform, setNewPlatform] = useState('fanvue')
+  const [newStatus, setNewStatus] = useState('draft')
+  const [newNotes, setNewNotes] = useState('')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch('/api/m/publications')
+      const data = await res.json()
+      if (data?.ok) setPubs((data.publications || []).reverse())
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  const save = async () => {
+    if (!newImageUrl.trim()) return
+    const body: Partial<Publication> = {
+      image_url: newImageUrl.trim(),
+      title: newTitle,
+      notes: newNotes,
+      platforms: [{ platform: newPlatform, status: newStatus }],
+    }
+    try {
+      await fetch('/api/m/publications', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      setNewOpen(false)
+      setNewImageUrl('')
+      setNewTitle('')
+      setNewNotes('')
+      await load()
+    } catch {}
+  }
+
+  const del = async (id: string) => {
+    if (!confirm('Delete publication record?')) return
+    try {
+      await fetch(`/api/m/publications/${id}`, { method: 'DELETE' })
+      await load()
+    } catch {}
+  }
+
+  return (
+    <div className="px-3 py-3 space-y-3">
+      {!newOpen ? (
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-muted-foreground">
+            {loading ? 'Loading...' : `${pubs.length} publications`}
+          </h2>
+          <Button onClick={() => setNewOpen(true)} size="sm" className="h-7 px-3 text-xs bg-gradient-to-r from-emerald-500 to-teal-500 text-white">
+            + Add
+          </Button>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-emerald-300">New Publication</span>
+            <button onClick={() => setNewOpen(false)}><X className="w-4 h-4 text-muted-foreground" /></button>
+          </div>
+          <Input value={newImageUrl} onChange={(e) => setNewImageUrl(e.target.value)} placeholder="Image URL (from Gallery)" className="h-8 text-xs" />
+          <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Title / caption" className="h-8 text-xs" />
+          <div className="grid grid-cols-2 gap-2">
+            <Select value={newPlatform} onValueChange={setNewPlatform}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {['fanvue', 'dlsite', 'patreon', 'fanbox', 'boosty', 'twitter', 'other'].map((p) => (
+                  <SelectItem key={p} value={p} className="text-xs">{p}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={newStatus} onValueChange={setNewStatus}>
+              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {['draft', 'scheduled', 'published'].map((s) => (
+                  <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <Textarea value={newNotes} onChange={(e) => setNewNotes(e.target.value)} placeholder="Notes (optional)" className="min-h-[50px] text-xs" />
+          <Button onClick={save} disabled={!newImageUrl.trim()} className="w-full h-9 text-xs bg-emerald-500 text-white">Save</Button>
+        </div>
+      )}
+
+      {!loading && pubs.length === 0 && !newOpen && (
+        <EmptyState icon={<Save className="w-8 h-8" />} message="No publications tracked yet. Tap + Add after publishing." />
+      )}
+
+      <ul className="space-y-2">
+        {pubs.map((p) => (
+          <li key={p.id} className="rounded-lg border border-border/40 bg-card/30 p-3 flex items-start gap-3">
+            <div className="h-16 w-12 shrink-0 rounded overflow-hidden bg-card">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              {p.image_url && <img src={p.image_url} alt="" className="w-full h-full object-cover" loading="lazy" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-xs font-medium truncate">{p.title || '(untitled)'}</div>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {(p.platforms || []).map((pl, i) => (
+                  <Badge key={i} variant="outline" className="text-[9px] px-1.5 py-0">
+                    {pl.platform} · {pl.status}
+                  </Badge>
+                ))}
+              </div>
+              {p.notes && <div className="text-[10px] text-muted-foreground mt-1 line-clamp-2">{p.notes}</div>}
+            </div>
+            <button onClick={() => del(p.id)} className="shrink-0 text-muted-foreground hover:text-red-400">
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+// ============================================================
+// Schedules Tab — define schedules (execution worker not yet implemented)
+// ============================================================
+
+interface Schedule {
+  id: string
+  name: string
+  preset_id?: string | null
+  variation_count?: number
+  cron?: string
+  next_run_at?: string
+  status?: string
+  created_at?: string
+}
+
+function SchedulesTab() {
+  const [scheds, setScheds] = useState<Schedule[]>([])
+  const [loading, setLoading] = useState(true)
+  const [newOpen, setNewOpen] = useState(false)
+  const [presets, setPresets] = useState<Preset[]>([])
+  const [newName, setNewName] = useState('')
+  const [newPresetId, setNewPresetId] = useState('')
+  const [newCount, setNewCount] = useState(10)
+  const [newCron, setNewCron] = useState('0 2 * * *')  // every day at 2am
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [sRes, pRes] = await Promise.all([
+        fetch('/api/m/schedules'),
+        fetch('/api/m/presets'),
+      ])
+      const s = await sRes.json()
+      const p = await pRes.json()
+      if (s?.ok) setScheds((s.schedules || []).reverse())
+      if (p?.ok) setPresets(p.presets || [])
+    } catch {} finally { setLoading(false) }
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  const save = async () => {
+    if (!newName.trim() || !newPresetId) return
+    try {
+      await fetch('/api/m/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newName.trim(),
+          preset_id: newPresetId,
+          variation_count: newCount,
+          cron: newCron,
+          status: 'active',
+        }),
+      })
+      setNewOpen(false)
+      setNewName(''); setNewPresetId(''); setNewCount(10); setNewCron('0 2 * * *')
+      await load()
+    } catch {}
+  }
+
+  const del = async (id: string) => {
+    if (!confirm('Delete schedule?')) return
+    try {
+      await fetch(`/api/m/schedules/${id}`, { method: 'DELETE' })
+      await load()
+    } catch {}
+  }
+
+  return (
+    <div className="px-3 py-3 space-y-3">
+      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-300">
+        ⚠ Scheduler execution worker not yet implemented. This UI saves schedule definitions only; they won&apos;t auto-run yet.
+      </div>
+
+      {!newOpen ? (
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-medium text-muted-foreground">
+            {loading ? 'Loading...' : `${scheds.length} schedules`}
+          </h2>
+          <Button onClick={() => setNewOpen(true)} size="sm" className="h-7 px-3 text-xs bg-gradient-to-r from-blue-500 to-cyan-500 text-white">
+            + Add
+          </Button>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-blue-500/40 bg-blue-500/5 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-blue-300">New Schedule</span>
+            <button onClick={() => setNewOpen(false)}><X className="w-4 h-4 text-muted-foreground" /></button>
+          </div>
+          <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Schedule name" className="h-8 text-xs" />
+          <Select value={newPresetId} onValueChange={setNewPresetId}>
+            <SelectTrigger className="h-8 text-xs"><SelectValue placeholder="Pick a preset" /></SelectTrigger>
+            <SelectContent>
+              {presets.map((p) => (
+                <SelectItem key={p.id} value={p.id || ''} className="text-xs">
+                  {p.kind === 'character' ? '🎭 ' : '📋 '}{p.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className="text-[10px] text-muted-foreground">Count / run</label>
+              <Input type="number" value={newCount} onChange={(e) => setNewCount(parseInt(e.target.value) || 1)} className="h-8 text-xs" min={1} max={50} />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] text-muted-foreground">Cron</label>
+              <Input value={newCron} onChange={(e) => setNewCron(e.target.value)} className="h-8 text-xs font-mono" placeholder="0 2 * * *" />
+            </div>
+          </div>
+          <p className="text-[9px] text-muted-foreground">
+            Cron format: &quot;min hour day month weekday&quot;. Examples: &quot;0 2 * * *&quot; = daily 2am · &quot;0 */3 * * *&quot; = every 3 hours
+          </p>
+          <Button onClick={save} disabled={!newName.trim() || !newPresetId} className="w-full h-9 text-xs bg-blue-500 text-white">Save</Button>
+        </div>
+      )}
+
+      {!loading && scheds.length === 0 && !newOpen && (
+        <EmptyState icon={<RefreshCw className="w-8 h-8" />} message="No schedules yet. Create one after saving a preset." />
+      )}
+
+      <ul className="space-y-2">
+        {scheds.map((s) => {
+          const preset = presets.find((p) => p.id === s.preset_id)
+          return (
+            <li key={s.id} className="rounded-lg border border-border/40 bg-card/30 p-3 flex items-start gap-2">
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium truncate">{s.name}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">
+                  {preset && <>Preset: {preset.name} · </>}
+                  {s.variation_count || 1} gen/run · cron <code className="font-mono text-[9px] text-cyan-300">{s.cron || '—'}</code>
+                </div>
+              </div>
+              <Badge variant="outline" className={`text-[9px] shrink-0 ${s.status === 'active' ? 'text-emerald-400 border-emerald-500/40' : 'text-muted-foreground'}`}>
+                {s.status || 'inactive'}
+              </Badge>
+              <button onClick={() => del(s.id)} className="shrink-0 text-muted-foreground hover:text-red-400">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
   )
 }
 
