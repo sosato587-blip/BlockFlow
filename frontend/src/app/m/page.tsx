@@ -579,7 +579,7 @@ function BottomLink() {
 // Generate Tab — quick image generation (mobile-first form)
 // ============================================================
 
-type ModelKind = 'z_image' | 'illustrious'
+type ModelKind = 'z_image' | 'illustrious' | 'wan_i2v'
 
 interface InventoryFile {
   filename: string
@@ -611,6 +611,12 @@ const PROMPT_PRESETS: Record<ModelKind, { label: string; text: string }[]> = {
     { label: 'Anime portrait', text: '1girl, masterpiece, best quality, very aesthetic, beautiful detailed eyes, anime style, illustrious, school uniform, looking at viewer, gentle smile, soft lighting' },
     { label: 'Anime fantasy', text: '1girl, masterpiece, best quality, magical girl outfit, fantasy background, dynamic pose, sparkles, soft pastel colors, anime style' },
   ],
+  wan_i2v: [
+    { label: 'Subtle motion', text: 'gentle hair movement in wind, slight body sway, soft smile, smooth motion, high quality animation' },
+    { label: 'Look at camera', text: 'turning slowly to face camera, soft expression, smooth rotation, hair shifts gently' },
+    { label: 'Hair wind', text: 'hair flowing in wind, fabric fluttering, looking out at horizon, cinematic, smooth motion' },
+    { label: 'Smile blink', text: 'gentle smile, blinking softly, slight head tilt, very subtle motion' },
+  ],
 }
 
 function GenerateTab() {
@@ -625,6 +631,10 @@ function GenerateTab() {
   const [loraName, setLoraName] = useState<string>('__none__')
   const [loraStrength, setLoraStrength] = useState(0.8)
   const [loraOptions, setLoraOptions] = useState<string[]>([])
+  // Wan I2V specific
+  const [imageUrl, setImageUrl] = useState('')
+  const [length, setLength] = useState(33)
+  const [fps, setFps] = useState(16)
 
   // Fetch LoRA options from inventory once
   useEffect(() => {
@@ -647,9 +657,12 @@ function GenerateTab() {
     if (m === 'z_image') {
       setWidth(1080)
       setHeight(1920)
-    } else {
+    } else if (m === 'illustrious') {
       setWidth(1024)
       setHeight(1536)
+    } else if (m === 'wan_i2v') {
+      setWidth(480)
+      setHeight(832)
     }
   }
 
@@ -684,13 +697,22 @@ function GenerateTab() {
       setError('Prompt is required')
       return
     }
+    if (model === 'wan_i2v' && !imageUrl.trim()) {
+      setError('Image URL is required for Wan I2V')
+      return
+    }
     setError(null)
     setSubmitting(true)
     setJob(null)
     try {
       const body: Record<string, unknown> = { model, prompt, width, height }
-      if (loraName !== '__none__') {
+      if (loraName !== '__none__' && model !== 'wan_i2v') {
         body.loras = [{ name: loraName, strength: loraStrength }]
+      }
+      if (model === 'wan_i2v') {
+        body.image_url = imageUrl.trim()
+        body.length = length
+        body.fps = fps
       }
       const res = await fetch('/api/m/generate', {
         method: 'POST',
@@ -710,7 +732,12 @@ function GenerateTab() {
     }
   }
 
+  // Output extraction: image URL or video URL
   const outputUrl = job?.output?.url ? String(job.output.url) : null
+  const outputVideos = (job?.output?.videos as Array<{ url?: string }> | undefined) || []
+  const videoUrl = outputVideos.length > 0 ? outputVideos[0].url : null
+  const isVideoOutput = model === 'wan_i2v' || !!videoUrl
+  const finalOutputUrl = videoUrl || outputUrl
 
   return (
     <div className="px-3 py-3 space-y-4">
@@ -723,10 +750,29 @@ function GenerateTab() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="z_image">Z-Image Turbo (Real, fast)</SelectItem>
-            <SelectItem value="illustrious">Illustrious XL (Anime, detailed)</SelectItem>
+            <SelectItem value="illustrious">Illustrious XL (Anime)</SelectItem>
+            <SelectItem value="wan_i2v">Wan 2.2 I2V (Image → Video, 5-10 min)</SelectItem>
           </SelectContent>
         </Select>
       </div>
+
+      {/* Image URL input (only for Wan I2V) */}
+      {model === 'wan_i2v' && (
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">
+            Input Image URL <span className="text-orange-400">*</span>
+          </label>
+          <Input
+            value={imageUrl}
+            onChange={(e) => setImageUrl(e.target.value)}
+            placeholder="https://... (R2 or any public image URL)"
+            className="h-9 text-xs font-mono"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            Tip: Generate an image first (Z-Image / Illustrious), then paste its URL here
+          </p>
+        </div>
+      )}
 
       {/* Prompt presets */}
       <div className="flex flex-wrap gap-1.5">
@@ -752,8 +798,8 @@ function GenerateTab() {
         />
       </div>
 
-      {/* LoRA selector */}
-      {loraOptions.length > 0 && (
+      {/* LoRA selector (image gen only — Wan I2V skips LoRA in this MVP) */}
+      {loraOptions.length > 0 && model !== 'wan_i2v' && (
         <div className="space-y-1.5">
           <label className="text-xs font-medium text-muted-foreground">LoRA (optional)</label>
           <Select value={loraName} onValueChange={setLoraName}>
@@ -815,6 +861,37 @@ function GenerateTab() {
         </div>
       </div>
 
+      {/* Wan I2V specific: length + fps */}
+      {model === 'wan_i2v' && (
+        <div className="grid grid-cols-2 gap-2">
+          <div className="space-y-1">
+            <label className="text-[10px] font-medium text-muted-foreground">Frames</label>
+            <Input
+              type="number"
+              value={length}
+              onChange={(e) => setLength(parseInt(e.target.value) || 33)}
+              className="h-8 text-xs"
+              min={9}
+              max={161}
+              step={4}
+            />
+            <p className="text-[9px] text-muted-foreground">33 frames @ 16fps ≈ 2 sec</p>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-medium text-muted-foreground">FPS</label>
+            <Input
+              type="number"
+              value={fps}
+              onChange={(e) => setFps(parseInt(e.target.value) || 16)}
+              className="h-8 text-xs"
+              min={8}
+              max={32}
+              step={2}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Submit */}
       <Button
         onClick={submit}
@@ -857,26 +934,51 @@ function GenerateTab() {
             {job.remote_job_id}
           </div>
 
-          {outputUrl && (
+          {finalOutputUrl && (
             <div className="space-y-2 pt-2">
               <div className="flex items-center gap-1.5 text-xs text-emerald-400">
-                <CheckCircle2 className="w-3 h-3" /> Image ready
+                <CheckCircle2 className="w-3 h-3" />
+                {isVideoOutput ? 'Video ready' : 'Image ready'}
               </div>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={outputUrl}
-                alt="Generated"
-                className="w-full rounded-lg border border-border/40"
-                loading="lazy"
-              />
-              <a
-                href={outputUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[10px] text-orange-400 hover:underline flex items-center gap-1"
-              >
-                Open original <ExternalLink className="w-3 h-3" />
-              </a>
+              {isVideoOutput ? (
+                <video
+                  src={finalOutputUrl}
+                  controls
+                  loop
+                  className="w-full rounded-lg border border-border/40"
+                />
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={finalOutputUrl}
+                  alt="Generated"
+                  className="w-full rounded-lg border border-border/40"
+                  loading="lazy"
+                />
+              )}
+              <div className="flex items-center gap-2">
+                <a
+                  href={finalOutputUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[10px] text-orange-400 hover:underline flex items-center gap-1"
+                >
+                  Open original <ExternalLink className="w-3 h-3" />
+                </a>
+                {!isVideoOutput && finalOutputUrl && (
+                  <button
+                    onClick={() => {
+                      setModel('wan_i2v')
+                      setImageUrl(finalOutputUrl)
+                      setWidth(480)
+                      setHeight(832)
+                    }}
+                    className="text-[10px] text-pink-400 hover:underline flex items-center gap-1 ml-auto"
+                  >
+                    Animate this → I2V
+                  </button>
+                )}
+              </div>
             </div>
           )}
 

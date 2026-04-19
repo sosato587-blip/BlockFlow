@@ -116,6 +116,147 @@ def build_z_image_workflow(
     return wf
 
 
+def build_wan_i2v_workflow(
+    prompt: str,
+    image_filename: str,
+    width: int = 480,
+    height: int = 832,
+    length: int = 33,
+    fps: int = 16,
+    steps: int = 20,
+    cfg: float = 3.5,
+    shift: float = 8.0,
+    seed: int | None = None,
+    negative: str = "static, no movement, blurry, distorted, bad quality, morphing, deformed",
+) -> dict[str, Any]:
+    """Wan 2.2 I2V workflow (high_noise + low_noise 2-pass with ModelSamplingSD3).
+
+    NOTE: Requires file_inputs to be passed alongside this workflow so the
+    handler can download the input image into image_filename before execution.
+    """
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
+
+    return {
+        # --- Model loaders ---
+        "37": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+                "weight_dtype": "fp8_e4m3fn",
+            },
+        },
+        "56": {
+            "class_type": "UNETLoader",
+            "inputs": {
+                "unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+                "weight_dtype": "fp8_e4m3fn",
+            },
+        },
+        "38": {
+            "class_type": "CLIPLoader",
+            "inputs": {"clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan"},
+        },
+        "39": {
+            "class_type": "VAELoader",
+            "inputs": {"vae_name": "wan_2.1_vae.safetensors"},  # Critical: NOT wan2.2_vae
+        },
+        # --- Input image ---
+        "52": {
+            "class_type": "LoadImage",
+            "inputs": {"image": image_filename},
+        },
+        # --- Text prompts ---
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": prompt, "clip": ["38", 0]},
+        },
+        "7": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": negative, "clip": ["38", 0]},
+        },
+        # --- ModelSamplingSD3 (shift) ---
+        "54": {
+            "class_type": "ModelSamplingSD3",
+            "inputs": {"shift": shift, "model": ["37", 0]},
+        },
+        "55": {
+            "class_type": "ModelSamplingSD3",
+            "inputs": {"shift": shift, "model": ["56", 0]},
+        },
+        # --- WanImageToVideo (conditioning + latent) ---
+        "50": {
+            "class_type": "WanImageToVideo",
+            "inputs": {
+                "width": width,
+                "height": height,
+                "length": length,
+                "batch_size": 1,
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "vae": ["39", 0],
+                "start_image": ["52", 0],
+            },
+        },
+        # --- 2-pass sampling ---
+        "57": {
+            "class_type": "KSamplerAdvanced",
+            "inputs": {
+                "model": ["54", 0],
+                "positive": ["50", 0],
+                "negative": ["50", 1],
+                "latent_image": ["50", 2],
+                "add_noise": "enable",
+                "noise_seed": seed,
+                "control_after_generate": "fixed",
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "start_at_step": 0,
+                "end_at_step": steps // 2,
+                "return_with_leftover_noise": "enable",
+            },
+        },
+        "58": {
+            "class_type": "KSamplerAdvanced",
+            "inputs": {
+                "model": ["55", 0],
+                "positive": ["50", 0],
+                "negative": ["50", 1],
+                "latent_image": ["57", 0],
+                "add_noise": "disable",
+                "noise_seed": seed,
+                "control_after_generate": "fixed",
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "start_at_step": steps // 2,
+                "end_at_step": 10000,
+                "return_with_leftover_noise": "disable",
+            },
+        },
+        # --- Decode + save ---
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["58", 0], "vae": ["39", 0]},
+        },
+        "26": {
+            "class_type": "VHS_VideoCombine",
+            "inputs": {
+                "images": ["8", 0],
+                "frame_rate": fps,
+                "loop_count": 0,
+                "filename_prefix": "WAN_mobile",
+                "format": "video/h264-mp4",
+                "pingpong": False,
+                "save_output": True,
+            },
+        },
+    }
+
+
 def build_illustrious_workflow(
     prompt: str,
     width: int = 1024,
@@ -232,6 +373,8 @@ async def m_generate(request: Request) -> JSONResponse:
     seed = payload.get("seed")
     loras = payload.get("loras") or []
 
+    file_inputs: dict[str, Any] = {}
+
     if model == "z_image":
         steps = int(payload.get("steps") or 8)
         cfg = float(payload.get("cfg") or 1.0)
@@ -248,9 +391,37 @@ async def m_generate(request: Request) -> JSONResponse:
             steps=steps, cfg=cfg, seed=seed,
             negative=negative, loras=loras,
         )
+    elif model == "wan_i2v":
+        image_url = str(payload.get("image_url") or "").strip()
+        if not image_url:
+            return JSONResponse(
+                {"ok": False, "error": "image_url is required for wan_i2v"},
+                status_code=400,
+            )
+        # Default Wan dimensions
+        width = int(payload.get("width") or 480)
+        height = int(payload.get("height") or 832)
+        length = int(payload.get("length") or 33)
+        fps = int(payload.get("fps") or 16)
+        steps = int(payload.get("steps") or 20)
+        cfg = float(payload.get("cfg") or 3.5)
+        # Image filename for handler-side download
+        image_filename = "m_wan_input.png"
+        workflow = build_wan_i2v_workflow(
+            prompt=prompt, image_filename=image_filename,
+            width=width, height=height, length=length, fps=fps,
+            steps=steps, cfg=cfg, seed=seed,
+        )
+        file_inputs = {
+            "52": {
+                "url": image_url,
+                "filename": image_filename,
+                "field": "image",
+            }
+        }
     else:
         return JSONResponse(
-            {"ok": False, "error": f"unsupported model: {model} (use 'z_image' or 'illustrious')"},
+            {"ok": False, "error": f"unsupported model: {model} (use 'z_image', 'illustrious', or 'wan_i2v')"},
             status_code=400,
         )
 
@@ -258,7 +429,10 @@ async def m_generate(request: Request) -> JSONResponse:
     if not endpoint_id:
         return JSONResponse({"ok": False, "error": "RUNPOD_ENDPOINT_ID not configured"}, status_code=500)
 
-    job_input = {"workflow": workflow}
+    job_input: dict[str, Any] = {"workflow": workflow}
+    if file_inputs:
+        job_input["file_inputs"] = file_inputs
+        job_input["timeout"] = 900  # Wan jobs can take 5-10 min
 
     try:
         remote_job_id = services._submit_job(endpoint_id, job_input)
