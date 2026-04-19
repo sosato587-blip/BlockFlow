@@ -31,6 +31,20 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => { setMounted(true) }, [])
   const pathname = usePathname()
   const isGenerateRoute = pathname === '/generate'
+  // Mobile-only routes (/m or /m/...) get a stripped-down shell:
+  // no NavBar, no Sidebar, no PipelineTabs. Just the page.
+  const isMobileRoute = pathname === '/m' || pathname.startsWith('/m/')
+
+  if (isMobileRoute) {
+    return (
+      <ErrorBoundary>
+        <TooltipProvider>
+          {children}
+        </TooltipProvider>
+      </ErrorBoundary>
+    )
+  }
+
   const pipelineShellClass = isGenerateRoute
     ? 'h-screen bg-background'
     : 'h-screen bg-background invisible pointer-events-none fixed inset-0 -z-10'
