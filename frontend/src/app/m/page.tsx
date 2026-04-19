@@ -11,11 +11,41 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import {
-  fetchR2Images,
   fetchRuns,
   toggleRunFavorite,
-  type R2Image,
 } from '@/lib/api'
+
+// R2 image type (kept locally to avoid dependency on uncommitted lib changes).
+interface R2Image {
+  key: string
+  filename: string
+  size: number
+  last_modified: string
+  url: string
+}
+
+// R2 image fetcher with graceful 404 handling (works whether or not r2_routes
+// has been committed to backend).
+async function fetchR2Images(
+  limit = 50,
+  offset = 0,
+  prefix = ''
+): Promise<{ ok: boolean; items?: R2Image[]; total?: number; error?: string }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (prefix) params.set('prefix', prefix)
+  try {
+    const res = await fetch(`/api/r2/list?${params}`)
+    if (res.status === 404) {
+      return { ok: false, error: 'R2 endpoint not configured (backend missing /api/r2/list)' }
+    }
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status}` }
+    }
+    return res.json()
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
 
 // ============================================================
 // Types
@@ -176,7 +206,11 @@ function GalleryTab() {
       ) : images.length === 0 ? (
         <EmptyState
           icon={<ImageIcon className="w-8 h-8" />}
-          message="No images yet. Generate something first."
+          message={
+            error?.includes('R2 endpoint not configured')
+              ? 'R2 gallery backend not available yet. Use Queue tab for run history.'
+              : 'No images yet. Generate something first.'
+          }
         />
       ) : (
         <div className="grid grid-cols-2 gap-2">
