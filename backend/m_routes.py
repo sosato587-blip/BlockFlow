@@ -850,6 +850,79 @@ async def m_delete_schedule(sched_id: str) -> JSONResponse:
 # Inventory (existing, kept at end)
 # ============================================================
 
+# ============================================================
+# Job cancel + logs viewer
+# ============================================================
+
+@router.post("/api/m/cancel/{remote_job_id}")
+async def m_cancel(remote_job_id: str, endpoint_id: str = "") -> JSONResponse:
+    """Force-cancel a RunPod Serverless job."""
+    import traceback
+    try:
+        eid = (endpoint_id or config.RUNPOD_ENDPOINT_ID or "").strip()
+        if not eid:
+            return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=400)
+        url = f"{config.RUNPOD_API_BASE}/{eid}/cancel/{remote_job_id}"
+        try:
+            resp = services._request_json("POST", url, None, timeout=30)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"cancel call failed: {e}"}, status_code=502)
+        return JSONResponse({"ok": True, "cancelled_job_id": remote_job_id, **(resp if isinstance(resp, dict) else {})})
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/cancel] ERROR: {e}\n{tb}", flush=True)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@router.get("/api/m/logs")
+async def m_logs(tail: int = 100, filter_level: str = "") -> JSONResponse:
+    """Return recent BlockFlow log lines for in-UI debugging.
+
+    Reads from C:\\Users\\sato\\logs\\blockflow_YYYY-MM-DD.log (or configurable path).
+    Falls back to searching ~/logs and %USERPROFILE%/logs.
+    """
+    import glob
+    import os as _os
+    try:
+        # Try common log locations
+        candidates: list[str] = []
+        home = _os.path.expanduser("~")
+        today = time.strftime("%Y-%m-%d")
+        for base in [
+            f"C:\\Users\\sato\\logs",
+            f"C:\\Users\\socr0\\logs",
+            _os.path.join(home, "logs"),
+        ]:
+            candidates.extend(glob.glob(f"{base}/blockflow_*.log"))
+            candidates.extend(glob.glob(f"{base}/blockflow_{today}*.log"))
+        # Deduplicate and sort by modification time
+        candidates = sorted(set(candidates), key=lambda p: _os.path.getmtime(p) if _os.path.exists(p) else 0, reverse=True)
+        if not candidates:
+            return JSONResponse({"ok": False, "error": "no log files found", "searched": [
+                f"C:\\Users\\sato\\logs", f"C:\\Users\\socr0\\logs", _os.path.join(home, "logs"),
+            ]})
+
+        log_path = candidates[0]
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+
+        # Take tail
+        lines = lines[-max(10, min(tail, 5000)):]
+        # Optional filter
+        if filter_level:
+            lf = filter_level.lower()
+            lines = [ln for ln in lines if lf in ln.lower()]
+
+        return JSONResponse({
+            "ok": True,
+            "log_path": log_path,
+            "line_count": len(lines),
+            "lines": lines,
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
 @router.get("/api/m/inventory")
 async def m_inventory() -> JSONResponse:
     """List models on the RunPod Network Volume across all known directories.

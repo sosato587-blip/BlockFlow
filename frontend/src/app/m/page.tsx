@@ -1768,6 +1768,28 @@ function GenerateTab() {
     setAbBatchId(null)
   }
 
+  // Force-cancel the current running job
+  const cancelJob = async () => {
+    if (!job?.remote_job_id) return
+    if (!confirm('Force-cancel this job on RunPod? (Partial cost may still apply)')) return
+    try {
+      const qs = endpointId.trim() ? `?endpoint_id=${encodeURIComponent(endpointId.trim())}` : ''
+      const res = await fetch(`/api/m/cancel/${job.remote_job_id}${qs}`, { method: 'POST' })
+      const data = await res.json()
+      if (data?.ok) {
+        setJob({
+          remote_job_id: job.remote_job_id,
+          status: 'CANCELLED',
+          error: 'Cancelled by user',
+        })
+      } else {
+        setError(data?.error || 'cancel failed')
+      }
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   const deleteSelectedPreset = async () => {
     if (!selectedPresetId || selectedPresetId === '__new__') return
     const p = presets.find((x) => x.id === selectedPresetId)
@@ -2465,17 +2487,30 @@ function GenerateTab() {
         <div className="rounded-lg border border-border/40 bg-card/50 p-3 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium">Status</span>
-            <Badge
-              variant="outline"
-              className={`text-[10px] ${
-                job.status === 'COMPLETED' ? 'border-emerald-500/40 text-emerald-400' :
-                job.status === 'FAILED' ? 'border-red-500/40 text-red-400' :
-                'border-amber-500/40 text-amber-400'
-              }`}
-            >
-              {job.status}
-              {polling && <Loader2 className="w-3 h-3 ml-1 animate-spin inline" />}
-            </Badge>
+            <div className="flex items-center gap-1.5">
+              <Badge
+                variant="outline"
+                className={`text-[10px] ${
+                  job.status === 'COMPLETED' ? 'border-emerald-500/40 text-emerald-400' :
+                  job.status === 'FAILED' || job.status === 'CANCELLED' || job.status === 'ERROR' ? 'border-red-500/40 text-red-400' :
+                  'border-amber-500/40 text-amber-400'
+                }`}
+              >
+                {job.status}
+                {polling && <Loader2 className="w-3 h-3 ml-1 animate-spin inline" />}
+              </Badge>
+              {/* Cancel button for in-progress jobs */}
+              {!['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'ERROR'].includes(job.status) && (
+                <button
+                  onClick={cancelJob}
+                  className="text-[10px] px-2 py-0.5 rounded border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20"
+                  title="Force-cancel this job on RunPod"
+                >
+                  <Square className="w-3 h-3 inline mr-0.5 fill-red-300" />
+                  Cancel
+                </button>
+              )}
+            </div>
           </div>
           <div className="text-[10px] font-mono text-muted-foreground truncate">
             {job.remote_job_id}
