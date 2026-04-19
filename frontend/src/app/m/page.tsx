@@ -1,8 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle, Repeat, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -643,6 +643,10 @@ function GenerateTab() {
   const [seedMode, setSeedMode] = useState<'random' | 'fixed'>('random')
   const [seedValue, setSeedValue] = useState(42)
   const [negativePrompt, setNegativePrompt] = useState('')
+  // Loop mode (matches PC version's Loop button — continuous generation)
+  const [looping, setLooping] = useState(false)
+  const [loopCount, setLoopCount] = useState(0)
+  const loopActiveRef = useRef(false)
 
   // Fetch LoRA options from inventory once
   useEffect(() => {
@@ -688,8 +692,23 @@ function GenerateTab() {
 
   // Polling
   useEffect(() => {
-    if (!job || job.status === 'COMPLETED' || job.status === 'FAILED' || job.status === 'CANCELLED') {
+    if (!job) {
       setPolling(false)
+      return
+    }
+    // Terminal states — stop polling; loop handler will trigger next iteration
+    if (job.status === 'COMPLETED' || job.status === 'FAILED' || job.status === 'CANCELLED') {
+      setPolling(false)
+      // If in loop mode and this completed, fire next generation after short delay
+      if (loopActiveRef.current && job.status === 'COMPLETED') {
+        const timer = setTimeout(() => {
+          if (loopActiveRef.current) {
+            setLoopCount((c) => c + 1)
+            void submitInternal()
+          }
+        }, 2000)  // 2s pause between loop iterations
+        return () => clearTimeout(timer)
+      }
       return
     }
     setPolling(true)
@@ -710,15 +729,20 @@ function GenerateTab() {
       }
     }, 5000)
     return () => clearInterval(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [job])
 
-  const submit = async () => {
+  const submitInternal = async () => {
     if (!prompt.trim()) {
       setError('Prompt is required')
+      loopActiveRef.current = false
+      setLooping(false)
       return
     }
     if (model === 'wan_i2v' && !imageUrl.trim()) {
       setError('Image URL is required for Wan I2V')
+      loopActiveRef.current = false
+      setLooping(false)
       return
     }
     setError(null)
@@ -758,9 +782,30 @@ function GenerateTab() {
       setJob({ remote_job_id: data.remote_job_id, status: 'IN_QUEUE' })
     } catch (e) {
       setError(String(e))
+      loopActiveRef.current = false
+      setLooping(false)
     } finally {
       setSubmitting(false)
     }
+  }
+
+  const submit = () => {
+    loopActiveRef.current = false
+    setLooping(false)
+    setLoopCount(0)
+    void submitInternal()
+  }
+
+  const startLoop = () => {
+    loopActiveRef.current = true
+    setLooping(true)
+    setLoopCount(1)
+    void submitInternal()
+  }
+
+  const stopLoop = () => {
+    loopActiveRef.current = false
+    setLooping(false)
   }
 
   // Output extraction: image URL or video URL
@@ -1113,18 +1158,53 @@ function GenerateTab() {
         )}
       </div>
 
-      {/* Submit */}
-      <Button
-        onClick={submit}
-        disabled={submitting || !prompt.trim()}
-        className="w-full h-12 text-sm font-semibold bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white"
-      >
-        {submitting ? (
-          <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Submitting...</>
+      {/* Submit buttons — Generate (single) / Loop (continuous) / Stop (when looping) */}
+      <div className="space-y-2">
+        {!looping ? (
+          <div className="grid grid-cols-3 gap-2">
+            <Button
+              onClick={submit}
+              disabled={submitting || !prompt.trim()}
+              className="col-span-2 h-12 text-sm font-semibold bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white"
+            >
+              {submitting ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Submitting...</>
+              ) : (
+                <><Sparkles className="w-4 h-4 mr-2" /> Generate</>
+              )}
+            </Button>
+            <Button
+              onClick={startLoop}
+              disabled={submitting || !prompt.trim() || seedMode === 'fixed'}
+              variant="outline"
+              className="h-12 text-xs font-semibold border-purple-500/40 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20"
+              title={seedMode === 'fixed' ? 'Loop requires random seed' : 'Continuous generation with new seed each iteration'}
+            >
+              <Repeat className="w-4 h-4 mr-1" /> Loop
+            </Button>
+          </div>
         ) : (
-          <><Sparkles className="w-4 h-4 mr-2" /> Generate</>
+          <Button
+            onClick={stopLoop}
+            className="w-full h-12 text-sm font-semibold bg-gradient-to-r from-red-500 to-purple-500 hover:from-red-600 hover:to-purple-600 text-white animate-pulse"
+          >
+            <Square className="w-4 h-4 mr-2 fill-white" />
+            Stop Loop (iteration {loopCount})
+          </Button>
         )}
-      </Button>
+
+        {seedMode === 'fixed' && (
+          <p className="text-[9px] text-muted-foreground italic text-center">
+            Loop disabled: seed mode is &quot;Fixed&quot; — switch to Random in Advanced to enable
+          </p>
+        )}
+
+        {looping && (
+          <p className="text-[10px] text-purple-300 text-center">
+            🔁 Loop active — new random seed each generation. Tap Stop to halt.
+          </p>
+        )}
+      </div>
 
       {/* Error */}
       {error && (
