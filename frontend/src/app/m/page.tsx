@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle, Repeat, Square, Save, BookOpen, DollarSign, Trash2, User } from 'lucide-react'
+import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle, Repeat, Square, Save, BookOpen, DollarSign, Trash2, User, GitCompareArrows, Layers } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -720,6 +720,18 @@ function GenerateTab() {
   const [saveCharName, setSaveCharName] = useState('')
   // Per-submit cost estimate
   const [costEstimate, setCostEstimate] = useState<number | null>(null)
+  // A/B compare mode
+  const [abBatchId, setAbBatchId] = useState<string | null>(null)
+  const [abJobs, setAbJobs] = useState<Array<{
+    variation_index: number
+    remote_job_id: string
+    status: string
+    prompt?: string
+    output_url?: string
+    last_error?: string
+  }>>([])
+  const [abPolling, setAbPolling] = useState(false)
+  const [abSubmitting, setAbSubmitting] = useState(false)
 
   // Fetch LoRA options from inventory once
   useEffect(() => {
@@ -746,6 +758,35 @@ function GenerateTab() {
     }
   }, [])
   useEffect(() => { void loadPresets() }, [loadPresets])
+
+  // A/B batch polling
+  useEffect(() => {
+    if (!abBatchId) {
+      setAbPolling(false)
+      return
+    }
+    // Check if all jobs are terminal
+    const allDone = abJobs.length > 0 && abJobs.every((j) =>
+      ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT'].includes(j.status)
+    )
+    if (allDone) {
+      setAbPolling(false)
+      return
+    }
+    setAbPolling(true)
+    const t = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/m/batch/${abBatchId}`)
+        const data = await res.json()
+        if (data?.ok && data.batch?.jobs) {
+          setAbJobs(data.batch.jobs)
+        }
+      } catch (e) {
+        console.error('AB poll failed', e)
+      }
+    }, 4000)
+    return () => clearInterval(t)
+  }, [abBatchId, abJobs])
 
   // Live cost estimate (debounced)
   useEffect(() => {
@@ -999,6 +1040,79 @@ function GenerateTab() {
     } catch (e) {
       setError(String(e))
     }
+  }
+
+  // A/B compare: submit 2 variations (same prompt/loras, different seeds)
+  const submitAB = async (count: 2 | 4 = 2) => {
+    if (!prompt.trim()) {
+      setError('Prompt is required')
+      return
+    }
+    if (model === 'wan_i2v') {
+      setError('A/B not supported for Wan I2V (too expensive). Use image gen models.')
+      return
+    }
+    setError(null)
+    setAbSubmitting(true)
+    setAbJobs([])
+    setAbBatchId(null)
+    try {
+      const base: Record<string, unknown> = {
+        model, prompt, width, height, steps, cfg,
+        sampler_name: samplerName,
+        scheduler,
+        negative: negativePrompt,
+      }
+      if (loras.length > 0) {
+        base.loras = loras
+          .filter((l) => l.name && l.name !== '__none__')
+          .map((l) => ({ name: l.name, strength: l.strength }))
+      }
+      const variations = Array.from({ length: count }, () => ({}))  // empty = each gets random seed
+      const res = await fetch('/api/m/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: `AB ${count}x ${new Date().toLocaleTimeString()}`,
+          base, variations,
+        }),
+      })
+      const data = await res.json()
+      if (!data?.ok) {
+        setError(data?.error || 'A/B submit failed')
+        return
+      }
+      setAbBatchId(data.batch_id)
+      setAbJobs(data.batch?.jobs || [])
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setAbSubmitting(false)
+    }
+  }
+
+  const pickAB = (jobIndex: number) => {
+    // When user picks A or B, the frontend can't know exact seed because backend
+    // generates it. We just record which one was picked via preset save.
+    // Best UX: user taps "Use this" on preferred, we save as preset with kind=character
+    // For now, clear AB and user can re-generate single with current settings
+    const job = abJobs[jobIndex]
+    if (!job) return
+    setAbJobs([])
+    setAbBatchId(null)
+    // Could set job result as main display
+    if (job.output_url) {
+      setJob({
+        remote_job_id: job.remote_job_id,
+        status: 'COMPLETED',
+        output: { url: job.output_url },
+      })
+    }
+  }
+
+  const clearAB = () => {
+    setAbJobs([])
+    setAbBatchId(null)
   }
 
   const deleteSelectedPreset = async () => {
@@ -1559,7 +1673,99 @@ function GenerateTab() {
             Loop disabled: seed mode is &quot;Fixed&quot; — switch to Random in Advanced to enable
           </p>
         )}
+
+        {/* A/B compare buttons */}
+        {!looping && model !== 'wan_i2v' && (
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <Button
+              onClick={() => submitAB(2)}
+              disabled={abSubmitting || !prompt.trim() || abPolling}
+              variant="outline"
+              className="h-10 text-xs border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20"
+              title="Submit 2 generations with different seeds to compare"
+            >
+              {abSubmitting ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <GitCompareArrows className="w-3.5 h-3.5 mr-1" />}
+              A/B (2 images)
+            </Button>
+            <Button
+              onClick={() => submitAB(4)}
+              disabled={abSubmitting || !prompt.trim() || abPolling}
+              variant="outline"
+              className="h-10 text-xs border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20"
+              title="Submit 4 generations with different seeds (2x2 grid)"
+            >
+              {abSubmitting ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Layers className="w-3.5 h-3.5 mr-1" />}
+              2×2 Grid (4)
+            </Button>
+          </div>
+        )}
       </div>
+
+      {/* A/B compare result panel */}
+      {abJobs.length > 0 && (
+        <div className="rounded-lg border border-cyan-500/40 bg-cyan-500/5 p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <GitCompareArrows className="w-4 h-4 text-cyan-400" />
+              <span className="text-xs font-medium text-cyan-300">
+                Compare ({abJobs.length} variants)
+              </span>
+              {abPolling && <Loader2 className="w-3 h-3 animate-spin text-cyan-400" />}
+            </div>
+            <button
+              onClick={clearAB}
+              className="text-[10px] text-muted-foreground hover:text-red-400"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+          <div className={`grid gap-2 ${abJobs.length <= 2 ? 'grid-cols-2' : 'grid-cols-2'}`}>
+            {abJobs.map((j, i) => {
+              const letter = String.fromCharCode(65 + i)  // A, B, C, D
+              const done = j.status === 'COMPLETED' && j.output_url
+              const failed = ['FAILED', 'CANCELLED', 'TIMED_OUT'].includes(j.status)
+              return (
+                <div
+                  key={j.remote_job_id}
+                  className="relative rounded-lg overflow-hidden border border-border/40 bg-card aspect-[9/16]"
+                >
+                  <div className="absolute top-1 left-1 z-10 h-5 w-5 rounded bg-cyan-500/80 flex items-center justify-center text-[10px] font-bold text-white">
+                    {letter}
+                  </div>
+                  {done ? (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={j.output_url} alt={`Variant ${letter}`} className="w-full h-full object-cover" loading="lazy" />
+                      <button
+                        onClick={() => pickAB(i)}
+                        className="absolute bottom-0 inset-x-0 px-2 py-1.5 bg-gradient-to-t from-black/90 to-transparent text-white text-[10px] font-medium"
+                      >
+                        ⭐ Use this
+                      </button>
+                    </>
+                  ) : failed ? (
+                    <div className="flex flex-col items-center justify-center h-full p-2 text-center">
+                      <AlertCircle className="w-5 h-5 text-red-400 mb-1" />
+                      <span className="text-[9px] text-red-300">{j.status}</span>
+                      {j.last_error && (
+                        <span className="text-[8px] text-muted-foreground truncate">{j.last_error}</span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center h-full">
+                      <Loader2 className="w-5 h-5 animate-spin text-cyan-400 mb-1" />
+                      <span className="text-[9px] text-cyan-300">{j.status || 'submitting'}</span>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <p className="text-[9px] text-muted-foreground text-center">
+            Same prompt + LoRAs, different random seeds. Tap &quot;Use this&quot; to keep the best as main result.
+          </p>
+        </div>
+      )}
 
       {/* Error */}
       {error && (
