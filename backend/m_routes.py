@@ -122,6 +122,134 @@ def build_z_image_workflow(
     return wf
 
 
+def build_illustrious_face_detailer_workflow(
+    image_filename: str,
+    face_prompt: str = "beautiful face, detailed eyes, sharp focus, high quality, natural skin",
+    face_negative: str = "blurry, deformed, bad anatomy, extra eyes, lowres",
+    bbox_model: str = "bbox/face_yolov8m.pt",
+    sam_model: str = "sam_vit_b_01ec64.pth",
+    use_sam: bool = True,
+    denoise: float = 0.4,
+    steps: int = 20,
+    cfg: float = 7.0,
+    seed: int | None = None,
+    loras: list[dict[str, Any]] | None = None,
+    sampler_name: str = "dpmpp_2m_sde",
+    scheduler: str = "karras",
+    guide_size: int = 512,
+    feather: int = 5,
+) -> dict[str, Any]:
+    """Illustrious XL + FaceDetailer (ADetailer) workflow.
+
+    Loads a pre-generated image, auto-detects faces, and runs inpaint on each
+    detected face to improve quality. Uses Impact Pack's FaceDetailer node.
+
+    Requires custom nodes: ComfyUI-Impact-Pack (usually pre-installed in
+    comfy-gen handler). Models: bbox detector + optional SAM.
+    """
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
+
+    wf: dict[str, Any] = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "waiIllustriousSDXL_v160.safetensors"},
+        },
+        "40": {
+            "class_type": "LoadImage",
+            "inputs": {"image": image_filename},
+        },
+        "41": {
+            "class_type": "UltralyticsDetectorProvider",
+            "inputs": {"model_name": bbox_model},
+        },
+        "44": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["1", 1], "text": face_prompt},
+        },
+        "45": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["1", 1], "text": face_negative},
+        },
+        "46": {
+            "class_type": "FaceDetailer",
+            "inputs": {
+                "image": ["40", 0],
+                "model": ["1", 0],
+                "clip": ["1", 1],
+                "vae": ["1", 2],
+                "positive": ["44", 0],
+                "negative": ["45", 0],
+                "bbox_detector": ["41", 0],
+                "guide_size": guide_size,
+                "guide_size_for": True,
+                "max_size": 1024,
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
+                "denoise": denoise,
+                "feather": feather,
+                "noise_mask": True,
+                "force_inpaint": False,
+                "bbox_threshold": 0.5,
+                "bbox_dilation": 10,
+                "bbox_crop_factor": 3.0,
+                "sam_detection_hint": "center-1",
+                "sam_dilation": 0,
+                "sam_threshold": 0.93,
+                "sam_bbox_expansion": 0,
+                "sam_mask_hint_threshold": 0.7,
+                "sam_mask_hint_use_negative": "False",
+                "drop_size": 10,
+                "wildcard": "",
+                "cycle": 1,
+            },
+        },
+        "47": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["46", 0], "filename_prefix": "IL_adetailer"},
+        },
+    }
+
+    # Add SAM to FaceDetailer if requested
+    if use_sam:
+        wf["42"] = {
+            "class_type": "SAMLoader",
+            "inputs": {"model_name": sam_model, "device_mode": "AUTO"},
+        }
+        wf["46"]["inputs"]["sam_model_opt"] = ["42", 0]
+
+    # LoRA chain (affects the face re-generation too)
+    if loras:
+        prev_model = "1"
+        prev_clip = "1"
+        prev_model_idx = 0
+        prev_clip_idx = 1
+        for i, lora in enumerate(loras):
+            nid = f"400{i}"
+            wf[nid] = {
+                "class_type": "LoraLoader",
+                "inputs": {
+                    "model": [prev_model, prev_model_idx],
+                    "clip": [prev_clip, prev_clip_idx],
+                    "lora_name": str(lora.get("name")),
+                    "strength_model": float(lora.get("strength", 1.0)),
+                    "strength_clip": float(lora.get("strength", 1.0)),
+                },
+            }
+            prev_model = nid
+            prev_clip = nid
+            prev_model_idx = 0
+            prev_clip_idx = 1
+        wf["46"]["inputs"]["model"] = [prev_model, 0]
+        wf["44"]["inputs"]["clip"] = [prev_clip, 1]
+        wf["45"]["inputs"]["clip"] = [prev_clip, 1]
+
+    return wf
+
+
 def build_illustrious_controlnet_canny_workflow(
     prompt: str,
     reference_filename: str,
@@ -1130,6 +1258,135 @@ async def m_upload(request: Request) -> JSONResponse:
         tb = traceback.format_exc()
         print(f"[m/upload] ERROR: {e}\n{tb}", flush=True)
         return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+# ============================================================
+# ADetailer / FaceDetailer (auto fix faces / hands)
+# ============================================================
+
+@router.post("/api/m/adetailer")
+async def m_adetailer(request: Request) -> JSONResponse:
+    """Run ADetailer (FaceDetailer) post-process on an existing image.
+
+    Body: {
+      image_url: "https://...",    // source image to fix
+      face_prompt: "..." (optional, default: good face prompt),
+      face_negative: "..." (optional),
+      denoise: 0.4 (default),
+      steps: 20, cfg: 7.0,
+      seed, loras, sampler_name, scheduler (optional),
+      use_sam: true (default),
+      endpoint_id (optional)
+    }
+    """
+    import traceback
+    try:
+        payload = await request.json()
+        image_url = str(payload.get("image_url") or "").strip()
+        if not image_url:
+            return JSONResponse({"ok": False, "error": "image_url required"}, status_code=400)
+
+        endpoint_id = str(payload.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
+        if not endpoint_id:
+            return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=400)
+
+        seed = payload.get("seed")
+        loras = payload.get("loras") or []
+        image_filename = "m_adet_src.png"
+
+        workflow = build_illustrious_face_detailer_workflow(
+            image_filename=image_filename,
+            face_prompt=str(payload.get("face_prompt") or "beautiful face, detailed eyes, sharp focus, high quality, natural skin"),
+            face_negative=str(payload.get("face_negative") or "blurry, deformed, bad anatomy, extra eyes, lowres"),
+            bbox_model=str(payload.get("bbox_model") or "bbox/face_yolov8m.pt"),
+            sam_model=str(payload.get("sam_model") or "sam_vit_b_01ec64.pth"),
+            use_sam=bool(payload.get("use_sam", True)),
+            denoise=float(payload.get("denoise") or 0.4),
+            steps=int(payload.get("steps") or 20),
+            cfg=float(payload.get("cfg") or 7.0),
+            seed=int(seed) if seed is not None else None,
+            loras=loras,
+            sampler_name=str(payload.get("sampler_name") or "dpmpp_2m_sde"),
+            scheduler=str(payload.get("scheduler") or "karras"),
+            guide_size=int(payload.get("guide_size") or 512),
+            feather=int(payload.get("feather") or 5),
+        )
+
+        file_inputs = {
+            "40": {"url": image_url, "filename": image_filename, "field": "image"},
+        }
+
+        try:
+            remote_job_id = services._submit_job(endpoint_id, {
+                "workflow": workflow,
+                "file_inputs": file_inputs,
+                "timeout": 600,
+            })
+        except Exception as e:
+            err_str = str(e)
+            if "FaceDetailer" in err_str or "UltralyticsDetectorProvider" in err_str or "Impact" in err_str:
+                return JSONResponse({
+                    "ok": False,
+                    "error": "ADetailer node (Impact Pack) or model missing. See /api/m/adetailer_dl_info for install instructions.",
+                    "detail": err_str,
+                }, status_code=424)
+            return JSONResponse({"ok": False, "error": f"submit failed: {e}"}, status_code=502)
+
+        est = m_store.estimate_cost(model="illustrious", width=1024, height=1024, steps=int(payload.get("steps") or 20))
+        m_store.log_cost({
+            "model": "illustrious_adetailer",
+            "steps": int(payload.get("steps") or 20),
+            "est_cost_usd": round(est, 4),
+            "remote_job_id": remote_job_id,
+        })
+
+        return JSONResponse({
+            "ok": True,
+            "remote_job_id": remote_job_id,
+            "endpoint_id": endpoint_id,
+            "est_cost_usd": round(est, 4),
+            "submitted_at": time.time(),
+        })
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/adetailer] ERROR: {e}\n{tb}", flush=True)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@router.get("/api/m/adetailer_dl_info")
+async def m_adetailer_dl_info() -> JSONResponse:
+    """DL info for ADetailer dependencies."""
+    endpoint_id = config.RUNPOD_ENDPOINT_ID
+    return JSONResponse({
+        "ok": True,
+        "models": [
+            {
+                "filename": "bbox/face_yolov8m.pt",
+                "size_mb": 52,
+                "source_url": "https://huggingface.co/Bingsu/adetailer/resolve/main/face_yolov8m.pt",
+                "description": "Face bbox detector (YOLOv8m). Required for FaceDetailer.",
+            },
+            {
+                "filename": "bbox/hand_yolov8s.pt",
+                "size_mb": 22,
+                "source_url": "https://huggingface.co/Bingsu/adetailer/resolve/main/hand_yolov8s.pt",
+                "description": "Hand bbox detector (YOLOv8s). For future hand fix.",
+            },
+            {
+                "filename": "sam_vit_b_01ec64.pth",
+                "size_mb": 375,
+                "source_url": "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",
+                "description": "Segment Anything (base). Better masking for FaceDetailer.",
+            },
+        ],
+        "install_locations": {
+            "bbox/face_yolov8m.pt": "/runpod-volume/models/ultralytics/bbox/",
+            "bbox/hand_yolov8s.pt": "/runpod-volume/models/ultralytics/bbox/",
+            "sam_vit_b_01ec64.pth": "/runpod-volume/models/sams/",
+        },
+        "custom_nodes_required": ["ComfyUI-Impact-Pack"],
+        "endpoint_id": endpoint_id,
+    })
 
 
 # ============================================================

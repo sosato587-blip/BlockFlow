@@ -1645,6 +1645,8 @@ function GenerateTab() {
   // Inpaint
   const [inpaintOpen, setInpaintOpen] = useState(false)
   const [inpaintSourceUrl, setInpaintSourceUrl] = useState('')
+  // ADetailer
+  const [adetailerSubmitting, setAdetailerSubmitting] = useState(false)
   // ControlNet
   const [cnEnabled, setCnEnabled] = useState(false)
   const [cnReferenceUrl, setCnReferenceUrl] = useState('')
@@ -2116,6 +2118,42 @@ function GenerateTab() {
   const clearAB = () => {
     setAbJobs([])
     setAbBatchId(null)
+  }
+
+  // Run ADetailer post-process on completed image
+  const runAdetailer = async () => {
+    const url = job?.output?.url as string | undefined
+    if (!url) return
+    setAdetailerSubmitting(true)
+    setError(null)
+    try {
+      const body: Record<string, unknown> = {
+        image_url: url,
+        denoise: 0.4,
+        steps: 20,
+      }
+      if (endpointId.trim()) body.endpoint_id = endpointId.trim()
+      if (loras.length > 0) {
+        body.loras = loras
+          .filter((l) => l.name && l.name !== '__none__')
+          .map((l) => ({ name: l.name, strength: l.strength }))
+      }
+      const res = await fetch('/api/m/adetailer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!data?.ok) {
+        setError(data?.error || 'adetailer failed')
+        return
+      }
+      setJob({ remote_job_id: data.remote_job_id, status: 'IN_QUEUE' })
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setAdetailerSubmitting(false)
+    }
   }
 
   // Force-cancel the current running job
@@ -2981,11 +3019,20 @@ function GenerateTab() {
                 {!isVideoOutput && finalOutputUrl && (
                   <>
                     <button
+                      onClick={runAdetailer}
+                      disabled={adetailerSubmitting}
+                      className="text-[10px] text-purple-400 hover:underline flex items-center gap-1 ml-auto disabled:opacity-40"
+                      title="Auto-detect & fix faces (Illustrious only)"
+                    >
+                      {adetailerSubmitting ? <Loader2 className="w-3 h-3 animate-spin" /> : <User className="w-3 h-3" />}
+                      Auto-fix face
+                    </button>
+                    <button
                       onClick={() => {
                         setInpaintSourceUrl(finalOutputUrl)
                         setInpaintOpen(true)
                       }}
-                      className="text-[10px] text-amber-400 hover:underline flex items-center gap-1 ml-auto"
+                      className="text-[10px] text-amber-400 hover:underline flex items-center gap-1"
                     >
                       <Paintbrush className="w-3 h-3" /> Inpaint
                     </button>
