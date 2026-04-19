@@ -41,6 +41,9 @@ def build_z_image_workflow(
     cfg: float = 1.0,
     seed: int | None = None,
     loras: list[dict[str, Any]] | None = None,
+    sampler_name: str = "euler",
+    scheduler: str = "simple",
+    negative: str = "",
 ) -> dict[str, Any]:
     """Z-Image Turbo workflow (CLIPLoader + qwen_3_4b + ae VAE)."""
     if seed is None:
@@ -66,7 +69,7 @@ def build_z_image_workflow(
         },
         "11": {
             "class_type": "CLIPTextEncode",
-            "inputs": {"clip": ["2", 0], "text": ""},  # Z-Image works best with empty negative
+            "inputs": {"clip": ["2", 0], "text": negative},
         },
         "6": {
             "class_type": "KSampler",
@@ -78,8 +81,8 @@ def build_z_image_workflow(
                 "seed": seed,
                 "steps": steps,
                 "cfg": cfg,
-                "sampler_name": "euler",
-                "scheduler": "simple",
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
                 "denoise": 1.0,
             },
         },
@@ -266,6 +269,8 @@ def build_illustrious_workflow(
     seed: int | None = None,
     negative: str = NEGATIVE_DEFAULT,
     loras: list[dict[str, Any]] | None = None,
+    sampler_name: str = "dpmpp_2m_sde",
+    scheduler: str = "karras",
 ) -> dict[str, Any]:
     """Illustrious XL workflow (SDXL family, CheckpointLoaderSimple)."""
     if seed is None:
@@ -298,8 +303,8 @@ def build_illustrious_workflow(
                 "seed": seed,
                 "steps": steps,
                 "cfg": cfg,
-                "sampler_name": "dpmpp_2m_sde",
-                "scheduler": "karras",
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
                 "denoise": 1.0,
             },
         },
@@ -378,18 +383,25 @@ async def m_generate(request: Request) -> JSONResponse:
     if model == "z_image":
         steps = int(payload.get("steps") or 8)
         cfg = float(payload.get("cfg") or 1.0)
+        sampler_name = str(payload.get("sampler_name") or "euler")
+        scheduler = str(payload.get("scheduler") or "simple")
+        negative = str(payload.get("negative") or "")
         workflow = build_z_image_workflow(
             prompt=prompt, width=width, height=height,
             steps=steps, cfg=cfg, seed=seed, loras=loras,
+            sampler_name=sampler_name, scheduler=scheduler, negative=negative,
         )
     elif model == "illustrious":
         steps = int(payload.get("steps") or 30)
         cfg = float(payload.get("cfg") or 7.0)
+        sampler_name = str(payload.get("sampler_name") or "dpmpp_2m_sde")
+        scheduler = str(payload.get("scheduler") or "karras")
         negative = str(payload.get("negative") or NEGATIVE_DEFAULT)
         workflow = build_illustrious_workflow(
             prompt=prompt, width=width, height=height,
             steps=steps, cfg=cfg, seed=seed,
             negative=negative, loras=loras,
+            sampler_name=sampler_name, scheduler=scheduler,
         )
     elif model == "wan_i2v":
         image_url = str(payload.get("image_url") or "").strip()

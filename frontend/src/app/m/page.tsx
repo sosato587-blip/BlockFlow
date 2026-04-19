@@ -634,6 +634,15 @@ function GenerateTab() {
   const [imageUrl, setImageUrl] = useState('')
   const [length, setLength] = useState(33)
   const [fps, setFps] = useState(16)
+  // Advanced controls (matches PC version's KSampler + negative prompt)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [steps, setSteps] = useState(8)
+  const [cfg, setCfg] = useState(1.0)
+  const [samplerName, setSamplerName] = useState('euler')
+  const [scheduler, setScheduler] = useState('simple')
+  const [seedMode, setSeedMode] = useState<'random' | 'fixed'>('random')
+  const [seedValue, setSeedValue] = useState(42)
+  const [negativePrompt, setNegativePrompt] = useState('')
 
   // Fetch LoRA options from inventory once
   useEffect(() => {
@@ -649,19 +658,31 @@ function GenerateTab() {
     })()
   }, [])
 
-  // Apply default dimensions when model changes
+  // Apply default dimensions + KSampler presets when model changes
   const onModelChange = (next: string) => {
     const m = (next as ModelKind)
     setModel(m)
     if (m === 'z_image') {
       setWidth(1080)
       setHeight(1920)
+      setSteps(8)
+      setCfg(1.0)
+      setSamplerName('euler')
+      setScheduler('simple')
     } else if (m === 'illustrious') {
       setWidth(1024)
       setHeight(1536)
+      setSteps(30)
+      setCfg(7.0)
+      setSamplerName('dpmpp_2m_sde')
+      setScheduler('karras')
     } else if (m === 'wan_i2v') {
       setWidth(480)
       setHeight(832)
+      setSteps(20)
+      setCfg(3.5)
+      setSamplerName('euler')
+      setScheduler('simple')
     }
   }
 
@@ -704,7 +725,16 @@ function GenerateTab() {
     setSubmitting(true)
     setJob(null)
     try {
-      const body: Record<string, unknown> = { model, prompt, width, height }
+      const body: Record<string, unknown> = {
+        model, prompt, width, height,
+        steps, cfg,
+        sampler_name: samplerName,
+        scheduler,
+        negative: negativePrompt,
+      }
+      if (seedMode === 'fixed') {
+        body.seed = seedValue
+      }
       if (loras.length > 0 && model !== 'wan_i2v') {
         body.loras = loras
           .filter((l) => l.name && l.name !== '__none__')
@@ -800,7 +830,7 @@ function GenerateTab() {
       </div>
 
       {/* LoRA selector — multi-LoRA (image gen only; Wan I2V skips for now) */}
-      {loraOptions.length > 0 && model !== 'wan_i2v' && (
+      {model !== 'wan_i2v' && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-muted-foreground">
@@ -823,6 +853,13 @@ function GenerateTab() {
               + Add LoRA
             </button>
           </div>
+
+          {loraOptions.length === 0 && (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-400">
+              LoRA list not loaded yet (inventory fetch in progress or failed).
+              Names can still be typed manually if you know them, or retry via Models tab.
+            </div>
+          )}
 
           {loras.length === 0 && (
             <p className="text-[10px] text-muted-foreground italic">
@@ -951,6 +988,130 @@ function GenerateTab() {
           </div>
         </div>
       )}
+
+      {/* Advanced controls (collapsible — mirrors PC's KSampler + negative prompt) */}
+      <div className="rounded-lg border border-border/40 bg-card/20">
+        <button
+          onClick={() => setAdvancedOpen((v) => !v)}
+          className="w-full flex items-center justify-between p-3 text-xs font-medium hover:bg-card/40 transition-colors"
+        >
+          <span>Advanced (KSampler / Negative / Seed)</span>
+          <span className={`transition-transform ${advancedOpen ? 'rotate-90' : ''}`}>›</span>
+        </button>
+
+        {advancedOpen && (
+          <div className="border-t border-border/40 p-3 space-y-3">
+            {/* Steps + CFG */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <label className="text-[10px] font-medium text-muted-foreground">Steps</label>
+                <Input
+                  type="number"
+                  value={steps}
+                  onChange={(e) => setSteps(parseInt(e.target.value) || 0)}
+                  className="h-8 text-xs"
+                  min={1}
+                  max={100}
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-medium text-muted-foreground">CFG</label>
+                <Input
+                  type="number"
+                  value={cfg}
+                  onChange={(e) => setCfg(parseFloat(e.target.value) || 0)}
+                  className="h-8 text-xs"
+                  min={0}
+                  max={30}
+                  step={0.1}
+                />
+              </div>
+            </div>
+
+            {/* Sampler + Scheduler */}
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <label className="text-[10px] font-medium text-muted-foreground">Sampler</label>
+                <Select value={samplerName} onValueChange={setSamplerName}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {['euler', 'euler_ancestral', 'heun', 'dpmpp_2m', 'dpmpp_2m_sde', 'dpmpp_2m_sde_gpu', 'dpmpp_3m_sde', 'dpmpp_sde', 'ddim', 'uni_pc', 'lcm', 'res_multistep'].map((s) => (
+                      <SelectItem key={s} value={s} className="text-xs">
+                        {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-medium text-muted-foreground">Scheduler</label>
+                <Select value={scheduler} onValueChange={setScheduler}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {['simple', 'karras', 'normal', 'exponential', 'sgm_uniform', 'beta', 'ddim_uniform', 'linear_quadratic', 'kl_optimal'].map((s) => (
+                      <SelectItem key={s} value={s} className="text-xs">
+                        {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* Seed mode */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-medium text-muted-foreground">Seed</label>
+              <div className="grid grid-cols-2 gap-2">
+                <Select value={seedMode} onValueChange={(v) => setSeedMode(v as 'random' | 'fixed')}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="random" className="text-xs">Random</SelectItem>
+                    <SelectItem value="fixed" className="text-xs">Fixed</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Input
+                  type="number"
+                  value={seedValue}
+                  onChange={(e) => setSeedValue(parseInt(e.target.value) || 0)}
+                  className="h-8 text-xs font-mono"
+                  disabled={seedMode === 'random'}
+                  min={0}
+                  max={2147483647}
+                />
+              </div>
+              {seedMode === 'random' && (
+                <p className="text-[9px] text-muted-foreground italic">
+                  New seed each generation (can&apos;t reproduce exactly)
+                </p>
+              )}
+            </div>
+
+            {/* Negative prompt */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-medium text-muted-foreground">
+                Negative Prompt (overrides default)
+              </label>
+              <Textarea
+                value={negativePrompt}
+                onChange={(e) => setNegativePrompt(e.target.value)}
+                placeholder={model === 'illustrious'
+                  ? '(leave blank to use default: lowres, bad anatomy, ...)'
+                  : model === 'z_image'
+                    ? '(Z-Image works best with EMPTY negative — leave blank)'
+                    : '(leave blank to use default)'
+                }
+                className="min-h-[60px] text-xs"
+              />
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Submit */}
       <Button
