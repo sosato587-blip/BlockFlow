@@ -471,6 +471,20 @@ async def m_inventory() -> JSONResponse:
     Calls list_models for each model_type in parallel, aggregates results.
     Best-effort: tolerates individual category failures.
     """
+    import traceback
+    try:
+        return _do_inventory()
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/inventory] ERROR: {e}\n{tb}", flush=True)
+        return JSONResponse(
+            {"ok": False, "error": f"{type(e).__name__}: {e}", "traceback": tb},
+            status_code=500,
+        )
+
+
+def _do_inventory() -> JSONResponse:
+    """Actual inventory implementation wrapped by m_inventory for error capture."""
     endpoint_id = config.RUNPOD_ENDPOINT_ID
     if not endpoint_id:
         return JSONResponse({"ok": False, "error": "RUNPOD_ENDPOINT_ID not configured"}, status_code=500)

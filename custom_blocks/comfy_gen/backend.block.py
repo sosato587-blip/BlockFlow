@@ -206,9 +206,10 @@ def _run_serverless_refresh(endpoint_id: str) -> None:
 def refresh_cache(payload: dict[str, Any] = {}) -> JSONResponse:
     """Start cache refresh in background, returns immediately.
 
-    Primary path: comfy-gen CLI (gets samplers/schedulers/loras from ComfyUI).
-    Fallback: RunPod Serverless list_models + hardcoded sampler/scheduler lists.
-    Fallback ensures Sync button completes even without comfy-gen CLI installed.
+    Default: RunPod Serverless list_models (reliable, no local deps).
+    Opt-in CLI: set env var BLOCKFLOW_USE_COMFYGEN_CLI=1 to use comfy-gen CLI
+    (disabled by default because the CLI path can hang indefinitely on
+    stderr readloop — proc.wait timeout never triggers).
     """
     import shutil
 
@@ -222,28 +223,30 @@ def refresh_cache(payload: dict[str, Any] = {}) -> JSONResponse:
         _refresh_state["done"] = False
         _refresh_state["error"] = ""
 
-        if shutil.which("comfy-gen"):
-            # Primary: comfy-gen CLI
+        use_cli = os.environ.get("BLOCKFLOW_USE_COMFYGEN_CLI", "").strip() in ("1", "true", "yes")
+
+        if use_cli and shutil.which("comfy-gen"):
+            # Opt-in CLI path (can hang — user responsibility)
             cmd = ["comfy-gen", "info"]
             if eid:
                 cmd.extend(["--endpoint-id", eid])
-            _refresh_state["status"] = "Starting comfy-gen info..."
+            _refresh_state["status"] = "Starting comfy-gen info (CLI, opt-in)..."
             t = threading.Thread(target=_run_refresh, args=(cmd,), daemon=True)
             t.start()
             return JSONResponse({"ok": True, "started": True, "mode": "cli"})
 
-        # Fallback: Serverless
+        # Default: Serverless
         if not eid:
-            _refresh_state["error"] = "RUNPOD_ENDPOINT_ID not set (CLI fallback requires it)"
+            _refresh_state["error"] = "RUNPOD_ENDPOINT_ID not set"
             _refresh_state["done"] = True
             _refresh_state["running"] = False
             return JSONResponse({"ok": False, "error": _refresh_state["error"]})
 
-        _refresh_state["status"] = "Using Serverless fallback (comfy-gen CLI not installed)..."
+        _refresh_state["status"] = "Fetching via Serverless..."
         t = threading.Thread(target=_run_serverless_refresh, args=(eid,), daemon=True)
         t.start()
 
-    return JSONResponse({"ok": True, "started": True, "mode": "serverless_fallback"})
+    return JSONResponse({"ok": True, "started": True, "mode": "serverless"})
 
 
 @router.get("/refresh-status")
