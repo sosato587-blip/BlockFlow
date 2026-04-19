@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, services
+from backend import config, services, m_store
 
 router = APIRouter()
 
@@ -451,12 +451,32 @@ async def m_generate(request: Request) -> JSONResponse:
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"submit failed: {e}"}, status_code=502)
 
+    # Estimate and log cost
+    est_cost = m_store.estimate_cost(
+        model=model,
+        width=width, height=height,
+        steps=int(payload.get("steps") or 0),
+        length=int(payload.get("length") or 0),
+        fps=int(payload.get("fps") or 16),
+    )
+    m_store.log_cost({
+        "model": model,
+        "width": width, "height": height,
+        "steps": int(payload.get("steps") or 0),
+        "length": int(payload.get("length") or 0),
+        "est_cost_usd": round(est_cost, 4),
+        "remote_job_id": remote_job_id,
+        "batch_id": payload.get("batch_id"),
+        "preset_id": payload.get("preset_id"),
+    })
+
     return JSONResponse({
         "ok": True,
         "remote_job_id": remote_job_id,
         "endpoint_id": endpoint_id,
         "model": model,
         "submitted_at": time.time(),
+        "est_cost_usd": round(est_cost, 4),
     })
 
 
@@ -475,6 +495,342 @@ async def m_status(remote_job_id: str) -> JSONResponse:
 
     return JSONResponse({"ok": True, **resp})
 
+
+# ============================================================
+# Cost tracking
+# ============================================================
+
+@router.get("/api/m/cost")
+async def m_cost_summary() -> JSONResponse:
+    """Return aggregate cost summary: today / month / total / by model."""
+    try:
+        summary = m_store.cost_summary()
+        return JSONResponse({"ok": True, **summary})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@router.get("/api/m/cost/estimate")
+async def m_cost_estimate(
+    model: str = "z_image",
+    width: int = 1080, height: int = 1920,
+    steps: int = 8, length: int = 0, fps: int = 16,
+) -> JSONResponse:
+    """Return estimated cost for a potential generation without submitting."""
+    try:
+        est = m_store.estimate_cost(model=model, width=width, height=height, steps=steps, length=length, fps=fps)
+        return JSONResponse({"ok": True, "est_cost_usd": round(est, 4)})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+# ============================================================
+# Presets (Template Library + Character Anchor unified)
+# ============================================================
+
+@router.get("/api/m/presets")
+async def m_list_presets() -> JSONResponse:
+    return JSONResponse({"ok": True, "presets": m_store.list_presets()})
+
+
+@router.get("/api/m/presets/{preset_id}")
+async def m_get_preset(preset_id: str) -> JSONResponse:
+    p = m_store.get_preset(preset_id)
+    if not p:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return JSONResponse({"ok": True, "preset": p})
+
+
+@router.post("/api/m/presets")
+async def m_save_preset(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"invalid json: {e}"}, status_code=400)
+    if not payload.get("name"):
+        return JSONResponse({"ok": False, "error": "name is required"}, status_code=400)
+    if payload.get("kind") not in ("template", "character"):
+        payload["kind"] = "template"
+    saved = m_store.save_preset(payload)
+    return JSONResponse({"ok": True, "preset": saved})
+
+
+@router.delete("/api/m/presets/{preset_id}")
+async def m_delete_preset(preset_id: str) -> JSONResponse:
+    ok = m_store.delete_preset(preset_id)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+# ============================================================
+# Batch generation (prompt variations)
+# ============================================================
+
+@router.post("/api/m/batch")
+async def m_batch_generate(request: Request) -> JSONResponse:
+    """Submit a batch of generations with prompt variations.
+
+    Body: {
+      base: { model, prompt, width, height, ... },  // base params
+      variations: [
+        { prompt_overlay: "white dress, park", ... overrides },  // merged with base
+        { prompt_overlay: "casual, cafe", ... },
+        ...
+      ],
+      name?: "optional batch name"
+    }
+
+    Submits each variation to RunPod Serverless in parallel.
+    Returns batch_id + list of remote_job_ids.
+    """
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"invalid json: {e}"}, status_code=400)
+
+    base = payload.get("base", {}) or {}
+    variations = payload.get("variations", []) or []
+    if not variations:
+        return JSONResponse({"ok": False, "error": "variations array required"}, status_code=400)
+    if not base.get("prompt") and not all(v.get("prompt") or v.get("prompt_overlay") for v in variations):
+        return JSONResponse({"ok": False, "error": "each variation needs prompt or prompt_overlay (or base must have prompt)"}, status_code=400)
+
+    endpoint_id = config.RUNPOD_ENDPOINT_ID
+    if not endpoint_id:
+        return JSONResponse({"ok": False, "error": "RUNPOD_ENDPOINT_ID not configured"}, status_code=500)
+
+    # Build batch record
+    batch = m_store.save_batch({
+        "name": payload.get("name") or f"batch_{int(time.time())}",
+        "preset_id": payload.get("preset_id"),
+        "base": base,
+        "variations": variations,
+        "jobs": [],
+        "status": "submitting",
+    })
+
+    jobs: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for i, var in enumerate(variations):
+        # Merge base + variation
+        params = {**base, **{k: v for k, v in var.items() if k != "prompt_overlay"}}
+        # Apply prompt overlay (appended to base prompt)
+        overlay = str(var.get("prompt_overlay") or "").strip()
+        if overlay:
+            base_prompt = str(params.get("prompt") or base.get("prompt") or "")
+            if base_prompt:
+                params["prompt"] = f"{base_prompt}, {overlay}"
+            else:
+                params["prompt"] = overlay
+
+        model = str(params.get("model", "z_image")).lower()
+        prompt = str(params.get("prompt", "")).strip()
+        if not prompt:
+            errors.append(f"variation {i}: empty prompt")
+            continue
+
+        # Build workflow (same logic as /api/m/generate but inline)
+        width = int(params.get("width") or (1080 if model == "z_image" else 1024))
+        height = int(params.get("height") or (1920 if model == "z_image" else 1536))
+        seed = params.get("seed")
+        if seed is None:
+            # For batches, vary seed each iteration
+            seed = int(time.time() * 1000 + i) % (2**31)
+        loras = params.get("loras") or []
+
+        if model == "z_image":
+            workflow = build_z_image_workflow(
+                prompt=prompt, width=width, height=height,
+                steps=int(params.get("steps") or 8),
+                cfg=float(params.get("cfg") or 1.0),
+                seed=int(seed), loras=loras,
+                sampler_name=str(params.get("sampler_name") or "euler"),
+                scheduler=str(params.get("scheduler") or "simple"),
+                negative=str(params.get("negative") or ""),
+            )
+        elif model == "illustrious":
+            workflow = build_illustrious_workflow(
+                prompt=prompt, width=width, height=height,
+                steps=int(params.get("steps") or 30),
+                cfg=float(params.get("cfg") or 7.0),
+                seed=int(seed),
+                negative=str(params.get("negative") or NEGATIVE_DEFAULT),
+                loras=loras,
+                sampler_name=str(params.get("sampler_name") or "dpmpp_2m_sde"),
+                scheduler=str(params.get("scheduler") or "karras"),
+            )
+        else:
+            errors.append(f"variation {i}: unsupported model '{model}' (batch supports z_image + illustrious)")
+            continue
+
+        try:
+            remote_job_id = services._submit_job(endpoint_id, {"workflow": workflow})
+        except Exception as e:
+            errors.append(f"variation {i}: submit failed: {e}")
+            continue
+
+        est = m_store.estimate_cost(
+            model=model, width=width, height=height,
+            steps=int(params.get("steps") or 0),
+        )
+        m_store.log_cost({
+            "model": model, "width": width, "height": height,
+            "steps": int(params.get("steps") or 0),
+            "est_cost_usd": round(est, 4),
+            "remote_job_id": remote_job_id,
+            "batch_id": batch["id"],
+            "variation_index": i,
+        })
+
+        jobs.append({
+            "variation_index": i,
+            "remote_job_id": remote_job_id,
+            "model": model,
+            "prompt": prompt,
+            "est_cost_usd": round(est, 4),
+            "status": "IN_QUEUE",
+        })
+
+    # Update batch with final jobs list
+    batch["jobs"] = jobs
+    batch["status"] = "running" if jobs else "failed"
+    if errors:
+        batch["errors"] = errors
+    m_store.save_batch(batch)
+
+    return JSONResponse({
+        "ok": True,
+        "batch_id": batch["id"],
+        "jobs_submitted": len(jobs),
+        "errors": errors if errors else None,
+        "batch": batch,
+    })
+
+
+@router.get("/api/m/batch/{batch_id}")
+async def m_get_batch(batch_id: str) -> JSONResponse:
+    """Fetch batch status. Also refreshes remote job statuses for in-flight jobs."""
+    batch = m_store.get_batch(batch_id)
+    if not batch:
+        return JSONResponse({"ok": False, "error": "batch not found"}, status_code=404)
+
+    # Refresh in-flight job statuses
+    endpoint_id = config.RUNPOD_ENDPOINT_ID
+    updated = False
+    for job in batch.get("jobs", []):
+        if job.get("status") in ("COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"):
+            continue
+        rjid = job.get("remote_job_id")
+        if not rjid:
+            continue
+        try:
+            url = f"{config.RUNPOD_API_BASE}/{endpoint_id}/status/{rjid}"
+            resp = services._request_json("GET", url, None, timeout=10)
+            new_status = str(resp.get("status", "UNKNOWN")).upper()
+            if new_status != job.get("status"):
+                job["status"] = new_status
+                if new_status == "COMPLETED":
+                    output = resp.get("output", {})
+                    url = output.get("url") or output.get("video_url")
+                    if url:
+                        job["output_url"] = url
+                updated = True
+        except Exception as e:
+            job["last_error"] = str(e)
+
+    if updated:
+        # Compute overall batch status
+        statuses = [j.get("status") for j in batch.get("jobs", [])]
+        if all(s in ("COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT") for s in statuses):
+            if all(s == "COMPLETED" for s in statuses):
+                batch["status"] = "completed"
+            elif all(s in ("FAILED", "CANCELLED", "TIMED_OUT") for s in statuses):
+                batch["status"] = "failed"
+            else:
+                batch["status"] = "partial"
+        else:
+            batch["status"] = "running"
+        m_store.save_batch(batch)
+
+    return JSONResponse({"ok": True, "batch": batch})
+
+
+@router.get("/api/m/batches")
+async def m_list_batches() -> JSONResponse:
+    return JSONResponse({"ok": True, "batches": m_store.list_batches()})
+
+
+@router.delete("/api/m/batch/{batch_id}")
+async def m_delete_batch(batch_id: str) -> JSONResponse:
+    ok = m_store.delete_batch(batch_id)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+# ============================================================
+# Publications tracker
+# ============================================================
+
+@router.get("/api/m/publications")
+async def m_list_publications() -> JSONResponse:
+    return JSONResponse({"ok": True, "publications": m_store.list_publications()})
+
+
+@router.post("/api/m/publications")
+async def m_save_publication(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"invalid json: {e}"}, status_code=400)
+    if not payload.get("image_url"):
+        return JSONResponse({"ok": False, "error": "image_url required"}, status_code=400)
+    saved = m_store.save_publication(payload)
+    return JSONResponse({"ok": True, "publication": saved})
+
+
+@router.delete("/api/m/publications/{pub_id}")
+async def m_delete_publication(pub_id: str) -> JSONResponse:
+    ok = m_store.delete_publication(pub_id)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+# ============================================================
+# Schedules
+# ============================================================
+
+@router.get("/api/m/schedules")
+async def m_list_schedules() -> JSONResponse:
+    return JSONResponse({"ok": True, "schedules": m_store.list_schedules()})
+
+
+@router.post("/api/m/schedules")
+async def m_save_schedule(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"invalid json: {e}"}, status_code=400)
+    if not payload.get("name"):
+        return JSONResponse({"ok": False, "error": "name required"}, status_code=400)
+    saved = m_store.save_schedule(payload)
+    return JSONResponse({"ok": True, "schedule": saved})
+
+
+@router.delete("/api/m/schedules/{sched_id}")
+async def m_delete_schedule(sched_id: str) -> JSONResponse:
+    ok = m_store.delete_schedule(sched_id)
+    if not ok:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
+# ============================================================
+# Inventory (existing, kept at end)
+# ============================================================
 
 @router.get("/api/m/inventory")
 async def m_inventory() -> JSONResponse:
