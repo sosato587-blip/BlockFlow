@@ -18,7 +18,10 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from backend import config, services, m_store
+import base64
+import tempfile
+from pathlib import Path
+from backend import config, services, m_store, tmpfiles
 
 router = APIRouter()
 
@@ -115,6 +118,112 @@ def build_z_image_workflow(
         wf["6"]["inputs"]["model"] = [prev_model_node, 0]
         wf["10"]["inputs"]["clip"] = [prev_clip_node, 0]
         wf["11"]["inputs"]["clip"] = [prev_clip_node, 0]
+
+    return wf
+
+
+def build_illustrious_inpaint_workflow(
+    image_filename: str,
+    mask_filename: str,
+    prompt: str,
+    steps: int = 25,
+    cfg: float = 7.0,
+    denoise: float = 0.9,
+    seed: int | None = None,
+    negative: str = NEGATIVE_DEFAULT,
+    loras: list[dict[str, Any]] | None = None,
+    sampler_name: str = "dpmpp_2m_sde",
+    scheduler: str = "karras",
+) -> dict[str, Any]:
+    """Illustrious XL inpaint workflow.
+
+    Requires both image_filename (source) and mask_filename (white = area to regen).
+    Both should be provided via file_inputs so handler downloads them locally.
+    """
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
+
+    wf: dict[str, Any] = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "waiIllustriousSDXL_v160.safetensors"},
+        },
+        "50": {
+            "class_type": "LoadImage",
+            "inputs": {"image": image_filename},
+        },
+        "51": {
+            "class_type": "LoadImage",
+            "inputs": {"image": mask_filename},  # Used as mask source (alpha or grayscale)
+        },
+        "52": {
+            "class_type": "ImageToMask",
+            "inputs": {"image": ["51", 0], "channel": "red"},  # Red channel = mask
+        },
+        "53": {
+            "class_type": "VAEEncodeForInpaint",
+            "inputs": {
+                "pixels": ["50", 0],
+                "vae": ["1", 2],
+                "mask": ["52", 0],
+                "grow_mask_by": 6,
+            },
+        },
+        "10": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["1", 1], "text": prompt},
+        },
+        "11": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"clip": ["1", 1], "text": negative},
+        },
+        "6": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["10", 0],
+                "negative": ["11", 0],
+                "latent_image": ["53", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
+                "denoise": denoise,
+            },
+        },
+        "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["7", 0], "filename_prefix": "IL_inpaint"},
+        },
+    }
+
+    # LoRA chain
+    if loras:
+        prev_model = "1"
+        prev_clip = "1"
+        prev_model_idx = 0
+        prev_clip_idx = 1
+        for i, lora in enumerate(loras):
+            nid = f"200{i}"
+            wf[nid] = {
+                "class_type": "LoraLoader",
+                "inputs": {
+                    "model": [prev_model, prev_model_idx],
+                    "clip": [prev_clip, prev_clip_idx],
+                    "lora_name": str(lora.get("name")),
+                    "strength_model": float(lora.get("strength", 1.0)),
+                    "strength_clip": float(lora.get("strength", 1.0)),
+                },
+            }
+            prev_model = nid
+            prev_clip = nid
+            prev_model_idx = 0
+            prev_clip_idx = 1
+        wf["6"]["inputs"]["model"] = [prev_model, 0]
+        wf["10"]["inputs"]["clip"] = [prev_clip, 1]
+        wf["11"]["inputs"]["clip"] = [prev_clip, 1]
 
     return wf
 
@@ -849,6 +958,141 @@ async def m_delete_schedule(sched_id: str) -> JSONResponse:
 # ============================================================
 # Inventory (existing, kept at end)
 # ============================================================
+
+# ============================================================
+# Upload helper (base64 PNG → tmpfiles.org)
+# ============================================================
+
+@router.post("/api/m/upload")
+async def m_upload(request: Request) -> JSONResponse:
+    """Upload a base64-encoded image to tmpfiles.org and return public URL.
+
+    Body: { "data": "data:image/png;base64,iVBOR...", "filename": "mask.png" (optional) }
+    Returns: { "ok": true, "url": "https://tmpfiles.org/dl/..." }
+    """
+    import traceback
+    try:
+        payload = await request.json()
+        data_uri = str(payload.get("data", "")).strip()
+        filename = str(payload.get("filename") or "upload.png").strip()
+        if not data_uri:
+            return JSONResponse({"ok": False, "error": "data required (base64 data URI)"}, status_code=400)
+
+        if data_uri.startswith("data:"):
+            _, _, data_uri = data_uri.partition(",")
+        try:
+            blob = base64.b64decode(data_uri)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"base64 decode failed: {e}"}, status_code=400)
+
+        if len(blob) < 64 or len(blob) > 20 * 1024 * 1024:
+            return JSONResponse({"ok": False, "error": f"blob size out of range ({len(blob)} bytes)"}, status_code=400)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix or ".png") as tf:
+            tf.write(blob)
+            tmp_path = Path(tf.name)
+        try:
+            url = tmpfiles.upload_to_tmpfiles(tmp_path)
+        finally:
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+        return JSONResponse({"ok": True, "url": url, "size_bytes": len(blob)})
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/upload] ERROR: {e}\n{tb}", flush=True)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+# ============================================================
+# Inpaint (partial regeneration)
+# ============================================================
+
+@router.post("/api/m/inpaint")
+async def m_inpaint(request: Request) -> JSONResponse:
+    """Submit an inpaint generation.
+
+    Body: {
+      image_url: source image URL,
+      mask_url: mask PNG URL (red channel = area to regenerate),
+      prompt: "...",
+      negative, steps, cfg, denoise, seed, loras, endpoint_id (optional)
+    }
+    """
+    import traceback
+    try:
+        payload = await request.json()
+        image_url = str(payload.get("image_url") or "").strip()
+        mask_url = str(payload.get("mask_url") or "").strip()
+        prompt = str(payload.get("prompt") or "").strip()
+
+        if not image_url:
+            return JSONResponse({"ok": False, "error": "image_url required"}, status_code=400)
+        if not mask_url:
+            return JSONResponse({"ok": False, "error": "mask_url required"}, status_code=400)
+        if not prompt:
+            return JSONResponse({"ok": False, "error": "prompt required"}, status_code=400)
+
+        endpoint_id = str(payload.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
+        if not endpoint_id:
+            return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=400)
+
+        seed = payload.get("seed")
+        loras = payload.get("loras") or []
+
+        image_filename = "m_inpaint_src.png"
+        mask_filename = "m_inpaint_mask.png"
+
+        workflow = build_illustrious_inpaint_workflow(
+            image_filename=image_filename,
+            mask_filename=mask_filename,
+            prompt=prompt,
+            steps=int(payload.get("steps") or 25),
+            cfg=float(payload.get("cfg") or 7.0),
+            denoise=float(payload.get("denoise") or 0.9),
+            seed=int(seed) if seed is not None else None,
+            negative=str(payload.get("negative") or NEGATIVE_DEFAULT),
+            loras=loras,
+            sampler_name=str(payload.get("sampler_name") or "dpmpp_2m_sde"),
+            scheduler=str(payload.get("scheduler") or "karras"),
+        )
+
+        file_inputs = {
+            "50": {"url": image_url, "filename": image_filename, "field": "image"},
+            "51": {"url": mask_url, "filename": mask_filename, "field": "image"},
+        }
+
+        try:
+            remote_job_id = services._submit_job(endpoint_id, {
+                "workflow": workflow,
+                "file_inputs": file_inputs,
+                "timeout": 600,
+            })
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"submit failed: {e}"}, status_code=502)
+
+        est_cost = m_store.estimate_cost(model="illustrious", width=1024, height=1536, steps=int(payload.get("steps") or 25))
+        m_store.log_cost({
+            "model": "illustrious_inpaint",
+            "steps": int(payload.get("steps") or 25),
+            "est_cost_usd": round(est_cost, 4),
+            "remote_job_id": remote_job_id,
+        })
+
+        return JSONResponse({
+            "ok": True,
+            "remote_job_id": remote_job_id,
+            "endpoint_id": endpoint_id,
+            "est_cost_usd": round(est_cost, 4),
+            "submitted_at": time.time(),
+        })
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/inpaint] ERROR: {e}\n{tb}", flush=True)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
 
 # ============================================================
 # Job cancel + logs viewer

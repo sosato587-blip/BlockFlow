@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle, Repeat, Square, Save, BookOpen, DollarSign, Trash2, User, GitCompareArrows, Layers } from 'lucide-react'
+import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle, Repeat, Square, Save, BookOpen, DollarSign, Trash2, User, GitCompareArrows, Layers, Paintbrush, Eraser } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -293,6 +293,335 @@ function GalleryTab() {
 
       <ImageModal image={selected} onClose={() => setSelected(null)} />
     </div>
+  )
+}
+
+// ============================================================
+// Inpaint Modal (canvas mask drawer + submit)
+// ============================================================
+
+function InpaintModal({
+  sourceUrl,
+  endpointId,
+  onClose,
+  onResult,
+}: {
+  sourceUrl: string
+  endpointId: string
+  onClose: () => void
+  onResult: (url: string) => void
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const maskCanvasRef = useRef<HTMLCanvasElement>(null)
+  const imgRef = useRef<HTMLImageElement | null>(null)
+  const [isDrawing, setIsDrawing] = useState(false)
+  const [brushSize, setBrushSize] = useState(50)
+  const [tool, setTool] = useState<'paint' | 'erase'>('paint')
+  const [prompt, setPrompt] = useState('')
+  const [denoise, setDenoise] = useState(0.9)
+  const [submitting, setSubmitting] = useState(false)
+  const [job, setJob] = useState<{ id: string; status: string; output_url?: string } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // Load image into canvas on mount
+  useEffect(() => {
+    const img = new window.Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      imgRef.current = img
+      const c = canvasRef.current
+      const m = maskCanvasRef.current
+      if (!c || !m) return
+      c.width = img.naturalWidth
+      c.height = img.naturalHeight
+      m.width = img.naturalWidth
+      m.height = img.naturalHeight
+      c.getContext('2d')?.drawImage(img, 0, 0)
+      const mctx = m.getContext('2d')
+      if (mctx) {
+        mctx.fillStyle = 'black'
+        mctx.fillRect(0, 0, m.width, m.height)
+      }
+    }
+    img.onerror = () => setError('Failed to load source image')
+    img.src = sourceUrl
+  }, [sourceUrl])
+
+  const redraw = useCallback(() => {
+    const c = canvasRef.current
+    const m = maskCanvasRef.current
+    const img = imgRef.current
+    if (!c || !m || !img) return
+    const ctx = c.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(img, 0, 0)
+    // Overlay red where mask is white/red
+    const mctx = m.getContext('2d')
+    if (!mctx) return
+    const imageData = mctx.getImageData(0, 0, m.width, m.height)
+    ctx.globalAlpha = 0.5
+    ctx.fillStyle = 'red'
+    for (let y = 0; y < m.height; y += 4) {
+      for (let x = 0; x < m.width; x += 4) {
+        const i = (y * m.width + x) * 4
+        if (imageData.data[i] > 128) {
+          ctx.fillRect(x, y, 4, 4)
+        }
+      }
+    }
+    ctx.globalAlpha = 1
+  }, [])
+
+  const getPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const c = canvasRef.current
+    if (!c) return { x: 0, y: 0 }
+    const r = c.getBoundingClientRect()
+    const sx = c.width / r.width
+    const sy = c.height / r.height
+    return { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy }
+  }
+
+  const paintAt = (x: number, y: number) => {
+    const m = maskCanvasRef.current
+    if (!m) return
+    const mctx = m.getContext('2d')
+    if (!mctx) return
+    mctx.fillStyle = tool === 'paint' ? 'red' : 'black'
+    mctx.beginPath()
+    mctx.arc(x, y, brushSize / 2, 0, Math.PI * 2)
+    mctx.fill()
+    redraw()
+  }
+
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId)
+    setIsDrawing(true)
+    const { x, y } = getPos(e)
+    paintAt(x, y)
+  }
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!isDrawing) return
+    const { x, y } = getPos(e)
+    paintAt(x, y)
+  }
+  const onPointerUp = () => setIsDrawing(false)
+
+  const clearMask = () => {
+    const m = maskCanvasRef.current
+    if (!m) return
+    const mctx = m.getContext('2d')
+    if (!mctx) return
+    mctx.fillStyle = 'black'
+    mctx.fillRect(0, 0, m.width, m.height)
+    redraw()
+  }
+
+  const submit = async () => {
+    if (!prompt.trim()) { setError('Prompt required'); return }
+    const m = maskCanvasRef.current
+    if (!m) { setError('Canvas not ready'); return }
+    // Check if mask has any painted area
+    const mctx = m.getContext('2d')
+    if (!mctx) { setError('Canvas context unavailable'); return }
+    const imageData = mctx.getImageData(0, 0, m.width, m.height)
+    let painted = false
+    for (let i = 0; i < imageData.data.length; i += 16) {
+      if (imageData.data[i] > 128) { painted = true; break }
+    }
+    if (!painted) { setError('Paint the area you want to regenerate first'); return }
+
+    setError(null)
+    setSubmitting(true)
+    try {
+      const maskData = m.toDataURL('image/png')
+      const up = await fetch('/api/m/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: maskData, filename: 'mask.png' }),
+      })
+      const upData = await up.json()
+      if (!upData?.ok) { setError(upData?.error || 'mask upload failed'); return }
+      const maskUrl = upData.url
+
+      const body: Record<string, unknown> = {
+        image_url: sourceUrl,
+        mask_url: maskUrl,
+        prompt: prompt.trim(),
+        denoise,
+      }
+      if (endpointId.trim()) body.endpoint_id = endpointId.trim()
+
+      const res = await fetch('/api/m/inpaint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!data?.ok) { setError(data?.error || 'inpaint submit failed'); return }
+      setJob({ id: data.remote_job_id, status: 'IN_QUEUE' })
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  // Poll inpaint job
+  useEffect(() => {
+    if (!job || ['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'ERROR'].includes(job.status)) return
+    const t = setInterval(async () => {
+      try {
+        const qs = endpointId.trim() ? `?endpoint_id=${encodeURIComponent(endpointId.trim())}` : ''
+        const res = await fetch(`/api/m/status/${job.id}${qs}`)
+        const data = await res.json()
+        if (data?.ok) {
+          const status = String(data.status || 'UNKNOWN').toUpperCase()
+          const url = data.output?.url || data.output?.output?.url
+          setJob({ id: job.id, status, output_url: url })
+          if (status === 'COMPLETED' && url) onResult(url)
+        }
+      } catch {}
+    }, 4000)
+    return () => clearInterval(t)
+  }, [job, endpointId, onResult])
+
+  return (
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-[95vw] max-h-[95vh] overflow-y-auto p-0 gap-0">
+        <DialogTitle className="sr-only">Inpaint</DialogTitle>
+        <div className="sticky top-0 z-10 bg-background/90 backdrop-blur-md px-4 py-3 border-b border-border/40 flex items-center justify-between">
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Paintbrush className="w-4 h-4 text-amber-400" /> Inpaint — paint area to regenerate
+          </h2>
+          <button onClick={onClose} className="h-8 w-8 rounded-md hover:bg-accent/40 flex items-center justify-center">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          {/* Tool controls */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => setTool('paint')}
+              className={`text-xs px-3 py-1.5 rounded border flex items-center gap-1 ${tool === 'paint' ? 'border-red-500 bg-red-500/20 text-red-200' : 'border-border/40 text-muted-foreground'}`}
+            >
+              <Paintbrush className="w-3 h-3" /> Paint
+            </button>
+            <button
+              onClick={() => setTool('erase')}
+              className={`text-xs px-3 py-1.5 rounded border flex items-center gap-1 ${tool === 'erase' ? 'border-border/80 bg-card text-foreground' : 'border-border/40 text-muted-foreground'}`}
+            >
+              <Eraser className="w-3 h-3" /> Erase
+            </button>
+            <button onClick={clearMask} className="text-xs px-3 py-1.5 rounded border border-border/40 text-muted-foreground hover:text-foreground">
+              Clear
+            </button>
+            <div className="flex-1 min-w-[120px] flex items-center gap-2">
+              <span className="text-[10px] text-muted-foreground">Brush</span>
+              <Slider
+                value={[brushSize]}
+                onValueChange={([v]) => setBrushSize(v)}
+                min={10}
+                max={200}
+                step={5}
+                className="flex-1"
+              />
+              <span className="text-[10px] font-mono w-8 text-right">{brushSize}</span>
+            </div>
+          </div>
+
+          {/* Canvas */}
+          <div className="rounded-lg border border-border/40 bg-card overflow-hidden" style={{ maxHeight: '60vh' }}>
+            <canvas
+              ref={canvasRef}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerLeave={onPointerUp}
+              className="block w-full h-auto cursor-crosshair touch-none"
+              style={{ maxHeight: '60vh', objectFit: 'contain' }}
+            />
+            <canvas ref={maskCanvasRef} className="hidden" />
+          </div>
+
+          {/* Prompt + denoise */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-muted-foreground">
+              New prompt for masked area
+            </label>
+            <Textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="e.g. 'a hand holding a cup of coffee' or 'clean face, beautiful eyes, no deformities'"
+              className="min-h-[70px] text-sm"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] text-muted-foreground">Denoise:</label>
+            <Slider
+              value={[denoise]}
+              onValueChange={([v]) => setDenoise(v)}
+              min={0.3}
+              max={1.0}
+              step={0.05}
+              className="flex-1"
+            />
+            <span className="text-[10px] font-mono w-10 text-right">{denoise.toFixed(2)}</span>
+          </div>
+          <p className="text-[9px] text-muted-foreground">
+            Denoise: 0.5 = subtle change, 0.9 = complete regen. Higher = more new content.
+          </p>
+
+          {error && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-400">
+              {error}
+            </div>
+          )}
+
+          {job && (
+            <div className="rounded-md border border-border/40 bg-card/50 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium">Inpaint Status</span>
+                <Badge
+                  variant="outline"
+                  className={`text-[10px] ${
+                    job.status === 'COMPLETED' ? 'border-emerald-500/40 text-emerald-400' :
+                    ['FAILED', 'CANCELLED', 'TIMED_OUT', 'ERROR'].includes(job.status) ? 'border-red-500/40 text-red-400' :
+                    'border-amber-500/40 text-amber-400'
+                  }`}
+                >
+                  {job.status}
+                  {!['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'ERROR'].includes(job.status) && (
+                    <Loader2 className="w-3 h-3 ml-1 animate-spin inline" />
+                  )}
+                </Badge>
+              </div>
+              {job.output_url && (
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={job.output_url} alt="Inpaint result" className="w-full rounded border border-border/40" loading="lazy" />
+                  <div className="flex gap-2">
+                    <a href={job.output_url} target="_blank" rel="noopener noreferrer" className="text-[10px] text-orange-400 hover:underline">
+                      Open original
+                    </a>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Submit */}
+          <Button
+            onClick={submit}
+            disabled={submitting || !prompt.trim() || (!!job && !['COMPLETED', 'FAILED', 'CANCELLED', 'ERROR'].includes(job.status))}
+            className="w-full h-12 text-sm font-semibold bg-gradient-to-r from-amber-500 to-orange-500 text-white"
+          >
+            {submitting ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Submitting...</> : <><Paintbrush className="w-4 h-4 mr-2" />Generate Inpaint</>}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -1313,6 +1642,9 @@ function GenerateTab() {
   const [saveCharName, setSaveCharName] = useState('')
   // Per-submit cost estimate
   const [costEstimate, setCostEstimate] = useState<number | null>(null)
+  // Inpaint
+  const [inpaintOpen, setInpaintOpen] = useState(false)
+  const [inpaintSourceUrl, setInpaintSourceUrl] = useState('')
   // A/B compare mode
   const [abBatchId, setAbBatchId] = useState<string | null>(null)
   const [abJobs, setAbJobs] = useState<Array<{
@@ -2408,6 +2740,22 @@ function GenerateTab() {
         )}
       </div>
 
+      {/* Inpaint Modal */}
+      {inpaintOpen && inpaintSourceUrl && (
+        <InpaintModal
+          sourceUrl={inpaintSourceUrl}
+          endpointId={endpointId}
+          onClose={() => setInpaintOpen(false)}
+          onResult={(url) => {
+            setJob({
+              remote_job_id: 'inpaint-' + Date.now(),
+              status: 'COMPLETED',
+              output: { url },
+            })
+          }}
+        />
+      )}
+
       {/* A/B compare result panel */}
       {abJobs.length > 0 && (
         <div className="rounded-lg border border-cyan-500/40 bg-cyan-500/5 p-3 space-y-2">
@@ -2548,17 +2896,28 @@ function GenerateTab() {
                   Open original <ExternalLink className="w-3 h-3" />
                 </a>
                 {!isVideoOutput && finalOutputUrl && (
-                  <button
-                    onClick={() => {
-                      setModel('wan_i2v')
-                      setImageUrl(finalOutputUrl)
-                      setWidth(480)
-                      setHeight(832)
-                    }}
-                    className="text-[10px] text-pink-400 hover:underline flex items-center gap-1 ml-auto"
-                  >
-                    Animate this → I2V
-                  </button>
+                  <>
+                    <button
+                      onClick={() => {
+                        setInpaintSourceUrl(finalOutputUrl)
+                        setInpaintOpen(true)
+                      }}
+                      className="text-[10px] text-amber-400 hover:underline flex items-center gap-1 ml-auto"
+                    >
+                      <Paintbrush className="w-3 h-3" /> Inpaint
+                    </button>
+                    <button
+                      onClick={() => {
+                        setModel('wan_i2v')
+                        setImageUrl(finalOutputUrl)
+                        setWidth(480)
+                        setHeight(832)
+                      }}
+                      className="text-[10px] text-pink-400 hover:underline flex items-center gap-1"
+                    >
+                      Animate → I2V
+                    </button>
+                  </>
                 )}
               </div>
             </div>
