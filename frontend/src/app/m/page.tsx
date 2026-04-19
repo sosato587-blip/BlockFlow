@@ -1285,6 +1285,9 @@ function GenerateTab() {
   const [imageUrl, setImageUrl] = useState('')
   const [length, setLength] = useState(33)
   const [fps, setFps] = useState(16)
+  // Endpoint ID (mirrors PC's Endpoint ID field)
+  const [endpointId, setEndpointId] = useState('')
+  const [endpointLoaded, setEndpointLoaded] = useState(false)
   // Advanced controls (matches PC version's KSampler + negative prompt)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [steps, setSteps] = useState(8)
@@ -1323,19 +1326,64 @@ function GenerateTab() {
   const [abPolling, setAbPolling] = useState(false)
   const [abSubmitting, setAbSubmitting] = useState(false)
 
-  // Fetch LoRA options from inventory once
+  // Loading state for LoRA options
+  const [loraLoading, setLoraLoading] = useState(false)
+  const [loraFetchError, setLoraFetchError] = useState<string | null>(null)
+
+  // Fetch LoRA options: try cache first (fast), fallback to inventory (slow)
+  const fetchLoras = useCallback(async () => {
+    setLoraLoading(true)
+    setLoraFetchError(null)
+    try {
+      // Try fast path: comfy_gen cache (populated by Sync button)
+      const cacheRes = await fetch('/api/blocks/comfy_gen/cache')
+      const cacheData = await cacheRes.json()
+      if (cacheData?.ok && Array.isArray(cacheData.loras) && cacheData.loras.length > 0) {
+        setLoraOptions([...cacheData.loras].sort())
+        return
+      }
+      // Fallback: fresh inventory (slow, 30-60s Serverless cold start)
+      const res = await fetch('/api/m/inventory')
+      const data: InventoryResp = await res.json()
+      const loras = (data?.inventory?.loras || []).map((f) => f.filename)
+      if (loras.length > 0) {
+        setLoraOptions(loras.sort())
+      } else {
+        setLoraFetchError('LoRA list empty. Tap Refresh, or Sync on PC to populate cache.')
+      }
+    } catch (e) {
+      setLoraFetchError(`Fetch failed: ${e}. Try Refresh.`)
+    } finally {
+      setLoraLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { void fetchLoras() }, [fetchLoras])
+
+  // Fetch default endpoint_id from backend config (once on mount)
   useEffect(() => {
     void (async () => {
       try {
-        const res = await fetch('/api/m/inventory')
-        const data: InventoryResp = await res.json()
-        const loras = (data?.inventory?.loras || []).map((f) => f.filename)
-        setLoraOptions(loras.sort())
-      } catch (e) {
-        console.error('inventory fetch failed', e)
-      }
+        // Try a known endpoint that reveals config — health or status call
+        // Fallback: if we can't detect, leave blank so backend uses config default
+        const res = await fetch('/api/feature-flags')
+        if (res.ok) {
+          // feature-flags doesn't return endpoint_id; instead use env override if we can
+          // For now, load last-used from localStorage
+          const stored = typeof window !== 'undefined' ? localStorage.getItem('m_endpoint_id') : null
+          if (stored) setEndpointId(stored)
+        }
+      } catch {}
+      setEndpointLoaded(true)
     })()
   }, [])
+
+  // Persist endpoint_id when it changes
+  useEffect(() => {
+    if (endpointLoaded && endpointId && typeof window !== 'undefined') {
+      localStorage.setItem('m_endpoint_id', endpointId)
+    }
+  }, [endpointId, endpointLoaded])
 
   // Load presets once
   const loadPresets = useCallback(async () => {
@@ -1504,6 +1552,9 @@ function GenerateTab() {
         scheduler,
         negative: negativePrompt,
       }
+      if (endpointId.trim()) {
+        body.endpoint_id = endpointId.trim()
+      }
       if (seedMode === 'fixed') {
         body.seed = seedValue
       }
@@ -1652,6 +1703,9 @@ function GenerateTab() {
         sampler_name: samplerName,
         scheduler,
         negative: negativePrompt,
+      }
+      if (endpointId.trim()) {
+        base.endpoint_id = endpointId.trim()
       }
       if (loras.length > 0) {
         base.loras = loras
@@ -1903,30 +1957,48 @@ function GenerateTab() {
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-muted-foreground">
-              LoRAs (optional, {loras.length} added)
+              LoRAs (optional, {loras.length} added, {loraOptions.length} available)
             </label>
-            <button
-              onClick={() =>
-                setLoras((prev) => [
-                  ...prev,
-                  {
-                    id: crypto.randomUUID?.() || String(Date.now() + Math.random()),
-                    name: '__none__',
-                    strength: 0.8,
-                  },
-                ])
-              }
-              disabled={loras.length >= 8}
-              className="text-[10px] px-2 py-1 rounded-md border border-orange-500/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 transition-colors disabled:opacity-40"
-            >
-              + Add LoRA
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => void fetchLoras()}
+                disabled={loraLoading}
+                className="text-[10px] px-1.5 py-1 rounded-md border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40"
+                title="Refresh LoRA list"
+              >
+                <RefreshCw className={`w-3 h-3 ${loraLoading ? 'animate-spin' : ''}`} />
+              </button>
+              <button
+                onClick={() =>
+                  setLoras((prev) => [
+                    ...prev,
+                    {
+                      id: crypto.randomUUID?.() || String(Date.now() + Math.random()),
+                      name: '__none__',
+                      strength: 0.8,
+                    },
+                  ])
+                }
+                disabled={loras.length >= 8}
+                className="text-[10px] px-2 py-1 rounded-md border border-orange-500/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 transition-colors disabled:opacity-40"
+              >
+                + Add LoRA
+              </button>
+            </div>
           </div>
 
-          {loraOptions.length === 0 && (
+          {loraLoading && (
+            <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 p-2 text-[10px] text-cyan-300 flex items-center gap-1.5">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Loading LoRA list... (may take 30-60s on cold start)
+            </div>
+          )}
+
+          {!loraLoading && loraOptions.length === 0 && (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-400">
-              LoRA list not loaded yet (inventory fetch in progress or failed).
-              Names can still be typed manually if you know them, or retry via Models tab.
+              {loraFetchError || 'LoRA list empty.'}
+              <br />
+              <strong>Tip:</strong> Tap the ComfyUI Gen block&apos;s Sync button on PC once to populate the cache — mobile will then load it instantly.
             </div>
           )}
 
@@ -2070,6 +2142,20 @@ function GenerateTab() {
 
         {advancedOpen && (
           <div className="border-t border-border/40 p-3 space-y-3">
+            {/* Endpoint ID */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-medium text-muted-foreground">RunPod Endpoint ID</label>
+              <Input
+                value={endpointId}
+                onChange={(e) => setEndpointId(e.target.value)}
+                placeholder="(using backend default)"
+                className="h-8 text-xs font-mono"
+              />
+              <p className="text-[9px] text-muted-foreground">
+                Leave blank to use the server&apos;s default endpoint (from .env).
+                Override here if you want to hit a different RunPod endpoint.
+              </p>
+            </div>
             {/* Steps + CFG */}
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">

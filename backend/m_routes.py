@@ -437,9 +437,9 @@ async def m_generate(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    endpoint_id = config.RUNPOD_ENDPOINT_ID
+    endpoint_id = str(payload.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
     if not endpoint_id:
-        return JSONResponse({"ok": False, "error": "RUNPOD_ENDPOINT_ID not configured"}, status_code=500)
+        return JSONResponse({"ok": False, "error": "endpoint_id required (set in Advanced or backend .env)"}, status_code=500)
 
     job_input: dict[str, Any] = {"workflow": workflow}
     if file_inputs:
@@ -596,9 +596,9 @@ async def m_batch_generate(request: Request) -> JSONResponse:
     if not base.get("prompt") and not all(v.get("prompt") or v.get("prompt_overlay") for v in variations):
         return JSONResponse({"ok": False, "error": "each variation needs prompt or prompt_overlay (or base must have prompt)"}, status_code=400)
 
-    endpoint_id = config.RUNPOD_ENDPOINT_ID
+    endpoint_id = str(base.get("endpoint_id") or payload.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
     if not endpoint_id:
-        return JSONResponse({"ok": False, "error": "RUNPOD_ENDPOINT_ID not configured"}, status_code=500)
+        return JSONResponse({"ok": False, "error": "endpoint_id required (in base or payload or .env)"}, status_code=500)
 
     # Build batch record
     batch = m_store.save_batch({
@@ -606,6 +606,7 @@ async def m_batch_generate(request: Request) -> JSONResponse:
         "preset_id": payload.get("preset_id"),
         "base": base,
         "variations": variations,
+        "endpoint_id": endpoint_id,
         "jobs": [],
         "status": "submitting",
     })
