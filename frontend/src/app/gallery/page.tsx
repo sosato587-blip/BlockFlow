@@ -1,7 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, ChevronRight, Download, Search, X } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { ChevronLeft, ChevronRight, Download, Search, X, Maximize2, Film } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -33,6 +34,12 @@ function isVideo(filename: string): boolean {
 }
 
 export default function GalleryPage() {
+  const router = useRouter()
+  const sendToTool = (target: 'outpaint' | 'ltx', url: string) => {
+    try { sessionStorage.setItem('tools.prefill', JSON.stringify({ target, image_url: url })) } catch {}
+    router.push(`/tools?target=${target}`)
+  }
+
   const [images, setImages] = useState<R2Image[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -244,18 +251,41 @@ export default function GalleryPage() {
                     {formatDate(selectedImage.last_modified)} &middot; {formatFileSize(selectedImage.size)}
                   </p>
                 </div>
-                <a
-                  href={selectedImage.url}
-                  download={selectedImage.filename}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="shrink-0"
-                >
-                  <Button variant="outline" size="sm" className="h-8 gap-1.5">
-                    <Download className="w-3.5 h-3.5" />
-                    Download
-                  </Button>
-                </a>
+                <div className="flex items-center gap-2 shrink-0">
+                  {!isVideo(selectedImage.filename) && (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1.5 border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10"
+                        onClick={() => sendToTool('outpaint', selectedImage.url)}
+                      >
+                        <Maximize2 className="w-3.5 h-3.5" />
+                        Outpaint
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 gap-1.5 border-orange-500/40 text-orange-300 hover:bg-orange-500/10"
+                        onClick={() => sendToTool('ltx', selectedImage.url)}
+                      >
+                        <Film className="w-3.5 h-3.5" />
+                        LTX I2V
+                      </Button>
+                    </>
+                  )}
+                  <a
+                    href={selectedImage.url}
+                    download={selectedImage.filename}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    <Button variant="outline" size="sm" className="h-8 gap-1.5">
+                      <Download className="w-3.5 h-3.5" />
+                      Download
+                    </Button>
+                  </a>
+                </div>
               </div>
             </div>
           )}

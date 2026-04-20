@@ -88,6 +88,11 @@ const TABS: { id: TabId; label: string; Icon: typeof ImageIcon }[] = [
 
 export default function MobilePage() {
   const [tab, setTab] = useState<TabId>('generate')
+  useEffect(() => {
+    const handler = () => setTab('tools')
+    window.addEventListener('m-navigate-tools', handler)
+    return () => window.removeEventListener('m-navigate-tools', handler)
+  }, [])
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Header />
@@ -876,6 +881,12 @@ function RunCard({ run, onToggleFav }: { run: RunRecord; onToggleFav: () => void
 function ImageModal({ image, onClose }: { image: R2Image | null; onClose: () => void }) {
   const open = image !== null
   const isVid = image ? isVideo(image.filename) : false
+  const sendToTool = (target: 'outpaint' | 'ltx') => {
+    if (!image) return
+    try { sessionStorage.setItem('m.tools.prefill', JSON.stringify({ target, image_url: image.url })) } catch {}
+    try { window.dispatchEvent(new CustomEvent('m-navigate-tools')) } catch {}
+    onClose()
+  }
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="sm:max-w-[95vw] max-h-[90vh] p-0 overflow-hidden gap-0">
@@ -894,6 +905,18 @@ function ImageModal({ image, onClose }: { image: R2Image | null; onClose: () => 
               // eslint-disable-next-line @next/next/no-img-element
               <img src={image.url} alt={image.filename} className="max-w-full max-h-[80vh] object-contain" />
             )}
+          </div>
+        )}
+        {image && !isVid && (
+          <div className="flex gap-2 px-3 py-2 border-t border-border/40 bg-card">
+            <Button size="sm" variant="outline" onClick={() => sendToTool('outpaint')} className="flex-1 h-8 gap-1.5 border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10">
+              <Maximize2 className="w-3.5 h-3.5" />
+              Outpaint
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => sendToTool('ltx')} className="flex-1 h-8 gap-1.5 border-orange-500/40 text-orange-300 hover:bg-orange-500/10">
+              <Film className="w-3.5 h-3.5" />
+              LTX I2V
+            </Button>
           </div>
         )}
         {image && (
@@ -3180,6 +3203,21 @@ const MODEL_TYPE_LABELS: Record<string, string> = {
 
 function ToolsTab() {
   const [section, setSection] = useState<'outpaint' | 'charsheet' | 'ltx'>('outpaint')
+  const [prefillUrl, setPrefillUrl] = useState<string | undefined>()
+  const [prefillTarget, setPrefillTarget] = useState<'outpaint' | 'ltx' | undefined>()
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem('m.tools.prefill')
+      if (!raw) return
+      sessionStorage.removeItem('m.tools.prefill')
+      const p = JSON.parse(raw)
+      if (p?.image_url && (p.target === 'outpaint' || p.target === 'ltx')) {
+        setPrefillUrl(p.image_url)
+        setPrefillTarget(p.target)
+        setSection(p.target === 'ltx' ? 'ltx' : 'outpaint')
+      }
+    } catch {}
+  }, [])
   return (
     <div className="space-y-4">
       <div className="flex gap-2">
@@ -3205,15 +3243,16 @@ function ToolsTab() {
           LTX Video
         </button>
       </div>
-      {section === 'outpaint' && <OutpaintPanel />}
+      {section === 'outpaint' && <OutpaintPanel prefillImageUrl={prefillTarget === 'outpaint' ? prefillUrl : undefined} />}
       {section === 'charsheet' && <CharSheetPanel />}
-      {section === 'ltx' && <LtxVideoPanel />}
+      {section === 'ltx' && <LtxVideoPanel prefillImageUrl={prefillTarget === 'ltx' ? prefillUrl : undefined} />}
     </div>
   )
 }
 
-function OutpaintPanel() {
+function OutpaintPanel({ prefillImageUrl }: { prefillImageUrl?: string }) {
   const [imageUrl, setImageUrl] = useState('')
+  useEffect(() => { if (prefillImageUrl) setImageUrl(prefillImageUrl) }, [prefillImageUrl])
   const [prompt, setPrompt] = useState('full body, wide shot, detailed background, same character')
   const [negative, setNegative] = useState('')
   const [padL, setPadL] = useState(256)
@@ -3369,9 +3408,10 @@ function CharSheetPanel() {
   )
 }
 
-function LtxVideoPanel() {
+function LtxVideoPanel({ prefillImageUrl }: { prefillImageUrl?: string }) {
   const [prompt, setPrompt] = useState('')
   const [imageUrl, setImageUrl] = useState('')
+  useEffect(() => { if (prefillImageUrl) setImageUrl(prefillImageUrl) }, [prefillImageUrl])
   const [negative, setNegative] = useState('')
   const [width, setWidth] = useState(768)
   const [height, setHeight] = useState(512)

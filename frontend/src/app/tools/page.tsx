@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { Wand2, Maximize2, Users, Film, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -9,7 +10,28 @@ import { Slider } from '@/components/ui/slider'
 
 type SubmitResult = { remote_job_id?: string; est_cost_usd?: number; mode?: string; error?: string } | null
 
+function readPrefill(): { target?: string; image_url?: string } {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = sessionStorage.getItem('tools.prefill')
+    if (!raw) return {}
+    sessionStorage.removeItem('tools.prefill')
+    return JSON.parse(raw)
+  } catch { return {} }
+}
+
 export default function ToolsPage() {
+  const searchParams = useSearchParams()
+  const [prefillUrl, setPrefillUrl] = useState<string | undefined>()
+  const [prefillTarget, setPrefillTarget] = useState<string | undefined>()
+
+  useEffect(() => {
+    const p = readPrefill()
+    const target = searchParams?.get('target') || p.target
+    if (p.image_url) setPrefillUrl(p.image_url)
+    if (target) setPrefillTarget(target)
+  }, [searchParams])
+
   return (
     <div className="min-h-screen bg-background text-foreground pt-20 pb-12">
       <div className="max-w-7xl mx-auto px-6 space-y-6">
@@ -21,20 +43,26 @@ export default function ToolsPage() {
           <p className="text-sm text-muted-foreground mt-1">
             Outpaint (extend canvas), Character Sheet (multi-view), LTX Video (fast cheap video).
           </p>
+          {prefillUrl && prefillTarget && (
+            <p className="text-xs text-cyan-400 mt-2">
+              → Image URL auto-filled into <strong>{prefillTarget === 'outpaint' ? 'Outpaint' : 'LTX Video'}</strong> below.
+            </p>
+          )}
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-          <OutpaintCard />
+          <OutpaintCard prefillImageUrl={prefillTarget === 'outpaint' ? prefillUrl : undefined} />
           <CharSheetCard />
-          <LtxVideoCard />
+          <LtxVideoCard prefillImageUrl={prefillTarget === 'ltx' ? prefillUrl : undefined} />
         </div>
       </div>
     </div>
   )
 }
 
-function OutpaintCard() {
+function OutpaintCard({ prefillImageUrl }: { prefillImageUrl?: string }) {
   const [imageUrl, setImageUrl] = useState('')
+  useEffect(() => { if (prefillImageUrl) setImageUrl(prefillImageUrl) }, [prefillImageUrl])
   const [prompt, setPrompt] = useState('full body, wide shot, detailed background, same character')
   const [negative, setNegative] = useState('')
   const [padL, setPadL] = useState(256)
@@ -217,9 +245,10 @@ function CharSheetCard() {
   )
 }
 
-function LtxVideoCard() {
+function LtxVideoCard({ prefillImageUrl }: { prefillImageUrl?: string }) {
   const [prompt, setPrompt] = useState('')
   const [imageUrl, setImageUrl] = useState('')
+  useEffect(() => { if (prefillImageUrl) setImageUrl(prefillImageUrl) }, [prefillImageUrl])
   const [negative, setNegative] = useState('')
   const [width, setWidth] = useState(768)
   const [height, setHeight] = useState(512)
