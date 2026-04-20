@@ -3205,19 +3205,24 @@ function ToolsTab() {
   const [section, setSection] = useState<'outpaint' | 'charsheet' | 'ltx'>('outpaint')
   const [prefillUrl, setPrefillUrl] = useState<string | undefined>()
   const [prefillTarget, setPrefillTarget] = useState<'outpaint' | 'ltx' | undefined>()
+  const [endpointId, setEndpointId] = useState('')
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem('m.tools.prefill')
-      if (!raw) return
-      sessionStorage.removeItem('m.tools.prefill')
-      const p = JSON.parse(raw)
-      if (p?.image_url && (p.target === 'outpaint' || p.target === 'ltx')) {
-        setPrefillUrl(p.image_url)
-        setPrefillTarget(p.target)
-        setSection(p.target === 'ltx' ? 'ltx' : 'outpaint')
+      if (raw) {
+        sessionStorage.removeItem('m.tools.prefill')
+        const p = JSON.parse(raw)
+        if (p?.image_url && (p.target === 'outpaint' || p.target === 'ltx')) {
+          setPrefillUrl(p.image_url)
+          setPrefillTarget(p.target)
+          setSection(p.target === 'ltx' ? 'ltx' : 'outpaint')
+        }
       }
+      const saved = localStorage.getItem('blockflow.endpoint_id')
+      if (saved) setEndpointId(saved)
     } catch {}
   }, [])
+  useEffect(() => { try { if (endpointId) localStorage.setItem('blockflow.endpoint_id', endpointId) } catch {} }, [endpointId])
   return (
     <div className="space-y-4">
       <div className="flex gap-2">
@@ -3243,14 +3248,23 @@ function ToolsTab() {
           LTX Video
         </button>
       </div>
-      {section === 'outpaint' && <OutpaintPanel prefillImageUrl={prefillTarget === 'outpaint' ? prefillUrl : undefined} />}
-      {section === 'charsheet' && <CharSheetPanel />}
-      {section === 'ltx' && <LtxVideoPanel prefillImageUrl={prefillTarget === 'ltx' ? prefillUrl : undefined} />}
+      <div className="rounded-lg border border-border/50 bg-card/40 p-3 space-y-1">
+        <label className="text-[10px] text-muted-foreground">RunPod Endpoint ID (shared, saved)</label>
+        <Input
+          value={endpointId}
+          onChange={(e) => setEndpointId(e.target.value)}
+          placeholder="blank = backend default"
+          className="font-mono text-xs h-8"
+        />
+      </div>
+      {section === 'outpaint' && <OutpaintPanel prefillImageUrl={prefillTarget === 'outpaint' ? prefillUrl : undefined} endpointId={endpointId} />}
+      {section === 'charsheet' && <CharSheetPanel endpointId={endpointId} />}
+      {section === 'ltx' && <LtxVideoPanel prefillImageUrl={prefillTarget === 'ltx' ? prefillUrl : undefined} endpointId={endpointId} />}
     </div>
   )
 }
 
-function OutpaintPanel({ prefillImageUrl }: { prefillImageUrl?: string }) {
+function OutpaintPanel({ prefillImageUrl, endpointId }: { prefillImageUrl?: string; endpointId: string }) {
   const [imageUrl, setImageUrl] = useState('')
   useEffect(() => { if (prefillImageUrl) setImageUrl(prefillImageUrl) }, [prefillImageUrl])
   const [prompt, setPrompt] = useState('full body, wide shot, detailed background, same character')
@@ -3278,6 +3292,7 @@ function OutpaintPanel({ prefillImageUrl }: { prefillImageUrl?: string }) {
           negative: negative.trim() || undefined,
           pad_left: padL, pad_right: padR, pad_top: padT, pad_bottom: padB,
           feathering, steps, denoise,
+          endpoint_id: endpointId.trim() || undefined,
         }),
       })
       const data = await res.json()
@@ -3342,7 +3357,7 @@ function OutpaintPanel({ prefillImageUrl }: { prefillImageUrl?: string }) {
   )
 }
 
-function CharSheetPanel() {
+function CharSheetPanel({ endpointId }: { endpointId: string }) {
   const [prompt, setPrompt] = useState('')
   const [negative, setNegative] = useState('')
   const [width, setWidth] = useState(2048)
@@ -3362,6 +3377,7 @@ function CharSheetPanel() {
           prompt: prompt.trim(),
           negative: negative.trim() || undefined,
           width, height, steps,
+          endpoint_id: endpointId.trim() || undefined,
         }),
       })
       const data = await res.json()
@@ -3408,7 +3424,7 @@ function CharSheetPanel() {
   )
 }
 
-function LtxVideoPanel({ prefillImageUrl }: { prefillImageUrl?: string }) {
+function LtxVideoPanel({ prefillImageUrl, endpointId }: { prefillImageUrl?: string; endpointId: string }) {
   const [prompt, setPrompt] = useState('')
   const [imageUrl, setImageUrl] = useState('')
   useEffect(() => { if (prefillImageUrl) setImageUrl(prefillImageUrl) }, [prefillImageUrl])
@@ -3434,6 +3450,7 @@ function LtxVideoPanel({ prefillImageUrl }: { prefillImageUrl?: string }) {
           image_url: imageUrl.trim() || undefined,
           negative: negative.trim() || undefined,
           width, height, length, fps, steps,
+          endpoint_id: endpointId.trim() || undefined,
         }),
       })
       const data = await res.json()

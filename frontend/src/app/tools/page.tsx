@@ -20,17 +20,30 @@ function readPrefill(): { target?: string; image_url?: string } {
   } catch { return {} }
 }
 
+const ENDPOINT_LS_KEY = 'blockflow.endpoint_id'
+
 export default function ToolsPage() {
   const searchParams = useSearchParams()
   const [prefillUrl, setPrefillUrl] = useState<string | undefined>()
   const [prefillTarget, setPrefillTarget] = useState<string | undefined>()
+  const [endpointId, setEndpointId] = useState('')
 
   useEffect(() => {
     const p = readPrefill()
     const target = searchParams?.get('target') || p.target
     if (p.image_url) setPrefillUrl(p.image_url)
     if (target) setPrefillTarget(target)
+    try {
+      const saved = localStorage.getItem(ENDPOINT_LS_KEY)
+      if (saved) setEndpointId(saved)
+    } catch {}
   }, [searchParams])
+
+  useEffect(() => {
+    try {
+      if (endpointId) localStorage.setItem(ENDPOINT_LS_KEY, endpointId)
+    } catch {}
+  }, [endpointId])
 
   return (
     <div className="min-h-screen bg-background text-foreground pt-20 pb-12">
@@ -50,17 +63,33 @@ export default function ToolsPage() {
           )}
         </div>
 
+        <div className="rounded-lg border border-border/60 bg-card/40 p-4 space-y-1">
+          <label className="text-xs text-muted-foreground">
+            RunPod Endpoint ID{' '}
+            <span className="text-[10px]">(shared across all Tools; saved locally)</span>
+          </label>
+          <Input
+            value={endpointId}
+            onChange={(e) => setEndpointId(e.target.value)}
+            placeholder="e.g. xio27s12llqzpa — leave blank to use backend default"
+            className="font-mono text-sm"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            Blank = fall back to the <code>RUNPOD_ENDPOINT_ID</code> env var on the backend.
+          </p>
+        </div>
+
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-          <OutpaintCard prefillImageUrl={prefillTarget === 'outpaint' ? prefillUrl : undefined} />
-          <CharSheetCard />
-          <LtxVideoCard prefillImageUrl={prefillTarget === 'ltx' ? prefillUrl : undefined} />
+          <OutpaintCard prefillImageUrl={prefillTarget === 'outpaint' ? prefillUrl : undefined} endpointId={endpointId} />
+          <CharSheetCard endpointId={endpointId} />
+          <LtxVideoCard prefillImageUrl={prefillTarget === 'ltx' ? prefillUrl : undefined} endpointId={endpointId} />
         </div>
       </div>
     </div>
   )
 }
 
-function OutpaintCard({ prefillImageUrl }: { prefillImageUrl?: string }) {
+function OutpaintCard({ prefillImageUrl, endpointId }: { prefillImageUrl?: string; endpointId: string }) {
   const [imageUrl, setImageUrl] = useState('')
   useEffect(() => { if (prefillImageUrl) setImageUrl(prefillImageUrl) }, [prefillImageUrl])
   const [prompt, setPrompt] = useState('full body, wide shot, detailed background, same character')
@@ -88,6 +117,7 @@ function OutpaintCard({ prefillImageUrl }: { prefillImageUrl?: string }) {
           negative: negative.trim() || undefined,
           pad_left: padL, pad_right: padR, pad_top: padT, pad_bottom: padB,
           feathering, steps, denoise,
+          endpoint_id: endpointId.trim() || undefined,
         }),
       })
       const data = await res.json()
@@ -159,7 +189,7 @@ function OutpaintCard({ prefillImageUrl }: { prefillImageUrl?: string }) {
   )
 }
 
-function CharSheetCard() {
+function CharSheetCard({ endpointId }: { endpointId: string }) {
   const [prompt, setPrompt] = useState('')
   const [negative, setNegative] = useState('')
   const [width, setWidth] = useState(2048)
@@ -179,6 +209,7 @@ function CharSheetCard() {
           prompt: prompt.trim(),
           negative: negative.trim() || undefined,
           width, height, steps,
+          endpoint_id: endpointId.trim() || undefined,
         }),
       })
       const data = await res.json()
@@ -245,7 +276,7 @@ function CharSheetCard() {
   )
 }
 
-function LtxVideoCard({ prefillImageUrl }: { prefillImageUrl?: string }) {
+function LtxVideoCard({ prefillImageUrl, endpointId }: { prefillImageUrl?: string; endpointId: string }) {
   const [prompt, setPrompt] = useState('')
   const [imageUrl, setImageUrl] = useState('')
   useEffect(() => { if (prefillImageUrl) setImageUrl(prefillImageUrl) }, [prefillImageUrl])
@@ -271,6 +302,7 @@ function LtxVideoCard({ prefillImageUrl }: { prefillImageUrl?: string }) {
           image_url: imageUrl.trim() || undefined,
           negative: negative.trim() || undefined,
           width, height, length, fps, steps,
+          endpoint_id: endpointId.trim() || undefined,
         }),
       })
       const data = await res.json()

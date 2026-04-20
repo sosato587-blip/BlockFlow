@@ -47,6 +47,11 @@ MOCK_RUNPOD_VIDEO_URL = os.getenv(
 )
 MOCK_RUNPOD_DELAY_SEC = float(os.getenv("BLOCKFLOW_MOCK_DELAY_SEC", "1.0"))
 
+# When mock mode is on, a blank endpoint id should NOT block requests —
+# fall back to a sentinel so routes that require a non-empty endpoint_id pass.
+if MOCK_RUNPOD and not RUNPOD_ENDPOINT_ID:
+    RUNPOD_ENDPOINT_ID = "mock-endpoint"
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
 OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "").strip()
