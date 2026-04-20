@@ -1934,7 +1934,7 @@ function ComfyGenBlock({
                 )}
               </div>
               {usesUpstream ? (
-                <div className="min-h-[60px] max-h-[120px] rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 overflow-y-auto">
+                <div className="min-h-[160px] max-h-[480px] rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2 overflow-y-auto">
                   <div className="flex items-center gap-1.5 mb-1">
                     <svg className="w-3 h-3 text-blue-400 shrink-0" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
                       <path d="M2 6h8M7 3l3 3-3 3" />
@@ -1944,7 +1944,7 @@ function ComfyGenBlock({
                     </span>
                   </div>
                   {upstreamPromptText ? (
-                    <p className="text-xs text-muted-foreground line-clamp-4">{upstreamPromptText}</p>
+                    <p className="text-xs text-muted-foreground whitespace-pre-wrap">{upstreamPromptText}</p>
                   ) : (
                     <p className="text-xs text-muted-foreground/50 italic">Will be provided when pipeline runs</p>
                   )}
@@ -1955,7 +1955,7 @@ function ComfyGenBlock({
                     value={textValues[key] ?? ''}
                     onChange={(e) => setTextValues((prev) => ({ ...prev, [key]: e.target.value }))}
                     placeholder={to.current_value ? undefined : 'Enter text...'}
-                    className="min-h-[60px] max-h-[120px] text-xs resize-y overflow-y-auto"
+                    className="min-h-[160px] max-h-[480px] text-xs resize-y overflow-y-auto"
                   />
                   {/* Extra prompt textareas in automation mode */}
                   {automateEnabled && (autoText[key] || []).map((extraVal, idx) => (
@@ -1968,7 +1968,7 @@ function ComfyGenBlock({
                           return { ...prev, [key]: arr }
                         })}
                         placeholder={`Prompt variant ${idx + 2}...`}
-                        className="min-h-[60px] max-h-[120px] text-xs resize-y overflow-y-auto border-amber-500/30"
+                        className="min-h-[160px] max-h-[480px] text-xs resize-y overflow-y-auto border-amber-500/30"
                       />
                       <button
                         type="button"
@@ -2004,6 +2004,7 @@ function ComfyGenBlock({
             key={groupLabel}
             label={groupLabel}
             badge={`${items.length} fields`}
+            defaultOpen={true}
           >
             {items.map((to) => renderTextField(to, false))}
           </CollapsibleSection>
