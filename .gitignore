@@ -24,3 +24,4 @@ logs.txt
 
 # IDE / Claude Code launch configs
 .claude/
+data/

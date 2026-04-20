@@ -130,8 +130,11 @@ OUTPUT_DIR = LOCAL_OUTPUT_DIR
 
 # R2 (S3-compatible) storage for ComfyUI outputs
 R2_ENDPOINT = os.getenv("R2_ENDPOINT", "https://e98c9813ae3184d379b4fcbe4bc55745.r2.cloudflarestorage.com")
-R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY", "e2fbcaa71a8163efe61cb256f73ee8d1")
-R2_SECRET_KEY = os.getenv("R2_SECRET_KEY", "058a326a59965a30485856cd92452d20074726be8605bff895c6d9e26e6f2b31")
+# R2 credentials must come from the environment (.env). Do not hardcode.
+# The previous hardcoded defaults were exposed in git history — rotate keys
+# in Cloudflare R2 and update .env.  See AUTONOMOUS_REPORT.md (Security §).
+R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY", "")
+R2_SECRET_KEY = os.getenv("R2_SECRET_KEY", "")
 R2_BUCKET = os.getenv("R2_BUCKET", "hearmeman")
 R2_PREFIX = os.getenv("R2_PREFIX", "comfy-gen/outputs/")
 R2_REGION = os.getenv("R2_REGION", "auto")

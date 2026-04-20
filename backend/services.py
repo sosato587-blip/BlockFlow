@@ -351,7 +351,10 @@ def _submit_job(endpoint_id: str, job_input: dict[str, Any]) -> str:
 def _mock_status_response(remote_job_id: str) -> dict[str, Any]:
     """Build a fake RunPod status response; returns IN_PROGRESS briefly, then COMPLETED."""
     entry = _MOCK_JOB_REGISTRY.get(remote_job_id) or {}
-    elapsed = _now() - float(entry.get("submitted_at", _now()))
+    # Unknown mock ids (e.g. from a previous process) get treated as already-done
+    # so clients aren't stuck polling IN_PROGRESS forever.
+    default_submitted = _now() - (config.MOCK_RUNPOD_DELAY_SEC + 1.0)
+    elapsed = _now() - float(entry.get("submitted_at", default_submitted))
     is_video = bool(entry.get("is_video"))
     url = config.MOCK_RUNPOD_VIDEO_URL if is_video else config.MOCK_RUNPOD_IMAGE_URL
     fname = "mock_video.mp4" if is_video else "mock_image.png"

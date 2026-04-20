@@ -1253,9 +1253,12 @@ async def m_status(remote_job_id: str, endpoint_id: str = "") -> JSONResponse:
         if not eid:
             return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=500)
 
-        url = f"{config.RUNPOD_API_BASE}/{eid}/status/{remote_job_id}"
         try:
-            resp = services._request_json("GET", url, None, timeout=config.HTTP_TIMEOUT_SEC)
+            if config.MOCK_RUNPOD or str(remote_job_id).startswith("mock-"):
+                resp = services._mock_status_response(remote_job_id)
+            else:
+                url = f"{config.RUNPOD_API_BASE}/{eid}/status/{remote_job_id}"
+                resp = services._request_json("GET", url, None, timeout=config.HTTP_TIMEOUT_SEC)
         except Exception as e:
             return JSONResponse({"ok": False, "error": f"runpod status call failed: {e}"}, status_code=502)
 
@@ -2153,9 +2156,12 @@ async def m_cancel(remote_job_id: str, endpoint_id: str = "") -> JSONResponse:
         eid = (endpoint_id or config.RUNPOD_ENDPOINT_ID or "").strip()
         if not eid:
             return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=400)
-        url = f"{config.RUNPOD_API_BASE}/{eid}/cancel/{remote_job_id}"
         try:
-            resp = services._request_json("POST", url, None, timeout=30)
+            if config.MOCK_RUNPOD or str(remote_job_id).startswith("mock-"):
+                resp = {"id": remote_job_id, "status": "CANCELLED"}
+            else:
+                url = f"{config.RUNPOD_API_BASE}/{eid}/cancel/{remote_job_id}"
+                resp = services._request_json("POST", url, None, timeout=30)
         except Exception as e:
             return JSONResponse({"ok": False, "error": f"cancel call failed: {e}"}, status_code=502)
         return JSONResponse({"ok": True, "cancelled_job_id": remote_job_id, **(resp if isinstance(resp, dict) else {})})
