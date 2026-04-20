@@ -3,7 +3,7 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { Sparkles, FolderOpen, FileDown, FilePlus2, ChevronDown, Files, FileUp, X, ImageIcon, Smartphone, DollarSign, BookOpen, Layers, Save, RefreshCw } from 'lucide-react'
+import { Sparkles, FolderOpen, FileDown, FilePlus2, ChevronDown, Files, FileUp, X, ImageIcon, Smartphone, DollarSign, BookOpen, Layers, Save, RefreshCw, Wand2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import {
   DropdownMenu,
@@ -27,6 +27,7 @@ const NAV_ITEMS = [
   { href: '/batches', label: 'Batches', icon: Layers },
   { href: '/publications', label: 'Pubs', icon: Save },
   { href: '/schedules', label: 'Sched', icon: RefreshCw },
+  { href: '/tools', label: 'Tools', icon: Wand2 },
   { href: '/cost', label: 'Cost', icon: DollarSign },
   { href: '/m', label: 'Mobile', icon: Smartphone },
 ]
