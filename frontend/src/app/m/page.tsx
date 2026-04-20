@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle, Repeat, Square, Save, BookOpen, DollarSign, Trash2, User, GitCompareArrows, Layers, Paintbrush, Eraser } from 'lucide-react'
+import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle, Repeat, Square, Save, BookOpen, DollarSign, Trash2, User, GitCompareArrows, Layers, Paintbrush, Eraser, Wand2, Maximize2, Users, Film } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -60,7 +60,7 @@ async function fetchR2Images(
 // ============================================================
 // Types
 // ============================================================
-type TabId = 'generate' | 'gallery' | 'favorites' | 'queue' | 'models' | 'batch' | 'publications' | 'schedules'
+type TabId = 'generate' | 'gallery' | 'favorites' | 'queue' | 'models' | 'batch' | 'publications' | 'schedules' | 'tools'
 
 interface RunRecord {
   id: string
@@ -82,6 +82,7 @@ const TABS: { id: TabId; label: string; Icon: typeof ImageIcon }[] = [
   { id: 'queue', label: 'Queue', Icon: ListTodo },
   { id: 'publications', label: 'Pub', Icon: Save },
   { id: 'schedules', label: 'Sched', Icon: RefreshCw },
+  { id: 'tools', label: 'Tools', Icon: Wand2 },
   { id: 'models', label: 'Models', Icon: Database },
 ]
 
@@ -99,6 +100,7 @@ export default function MobilePage() {
         {tab === 'queue' && <QueueTab />}
         {tab === 'publications' && <PublicationsTab />}
         {tab === 'schedules' && <SchedulesTab />}
+        {tab === 'tools' && <ToolsTab />}
         {tab === 'models' && <ModelsTab />}
       </main>
       <BottomLink />
@@ -3171,6 +3173,299 @@ const MODEL_TYPE_LABELS: Record<string, string> = {
   loras: 'LoRAs',
   upscale_models: 'Upscale Models',
 }
+
+// ============================================================
+// ToolsTab — Phase 12 (Outpaint), 14 (Character Sheet), 16 (LTX Video)
+// ============================================================
+
+function ToolsTab() {
+  const [section, setSection] = useState<'outpaint' | 'charsheet' | 'ltx'>('outpaint')
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-2">
+        <button
+          onClick={() => setSection('outpaint')}
+          className={`flex-1 rounded-lg border p-2 text-xs font-medium flex flex-col items-center gap-1 ${section === 'outpaint' ? 'border-cyan-500 bg-cyan-500/10 text-cyan-300' : 'border-border/40 text-muted-foreground'}`}
+        >
+          <Maximize2 className="w-4 h-4" />
+          Outpaint
+        </button>
+        <button
+          onClick={() => setSection('charsheet')}
+          className={`flex-1 rounded-lg border p-2 text-xs font-medium flex flex-col items-center gap-1 ${section === 'charsheet' ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-border/40 text-muted-foreground'}`}
+        >
+          <Users className="w-4 h-4" />
+          Char Sheet
+        </button>
+        <button
+          onClick={() => setSection('ltx')}
+          className={`flex-1 rounded-lg border p-2 text-xs font-medium flex flex-col items-center gap-1 ${section === 'ltx' ? 'border-orange-500 bg-orange-500/10 text-orange-300' : 'border-border/40 text-muted-foreground'}`}
+        >
+          <Film className="w-4 h-4" />
+          LTX Video
+        </button>
+      </div>
+      {section === 'outpaint' && <OutpaintPanel />}
+      {section === 'charsheet' && <CharSheetPanel />}
+      {section === 'ltx' && <LtxVideoPanel />}
+    </div>
+  )
+}
+
+function OutpaintPanel() {
+  const [imageUrl, setImageUrl] = useState('')
+  const [prompt, setPrompt] = useState('full body, wide shot, detailed background, same character')
+  const [negative, setNegative] = useState('')
+  const [padL, setPadL] = useState(256)
+  const [padR, setPadR] = useState(256)
+  const [padT, setPadT] = useState(0)
+  const [padB, setPadB] = useState(256)
+  const [feathering, setFeathering] = useState(40)
+  const [steps, setSteps] = useState(25)
+  const [denoise, setDenoise] = useState(1.0)
+  const [submitting, setSubmitting] = useState(false)
+  const [result, setResult] = useState<{ remote_job_id?: string; est_cost_usd?: number; error?: string } | null>(null)
+
+  const submit = async () => {
+    if (!imageUrl.trim() || !prompt.trim()) return
+    setSubmitting(true); setResult(null)
+    try {
+      const res = await fetch('/api/m/outpaint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_url: imageUrl.trim(),
+          prompt: prompt.trim(),
+          negative: negative.trim() || undefined,
+          pad_left: padL, pad_right: padR, pad_top: padT, pad_bottom: padB,
+          feathering, steps, denoise,
+        }),
+      })
+      const data = await res.json()
+      if (!data?.ok) setResult({ error: data?.error || 'submit failed' })
+      else setResult({ remote_job_id: data.remote_job_id, est_cost_usd: data.est_cost_usd })
+    } catch (e) {
+      setResult({ error: String(e) })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-4 space-y-3">
+      <p className="text-xs text-muted-foreground">
+        Extend the canvas outward. Use padding (px) on each side to define how much new area to generate.
+        Good for turning close-ups into loose/wide shots.
+      </p>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Source Image URL</label>
+        <Input value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="https://... (from Gallery)" className="text-sm" />
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Prompt (what to fill outside)</label>
+        <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} className="text-sm" />
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Negative prompt (optional)</label>
+        <Input value={negative} onChange={(e) => setNegative(e.target.value)} placeholder="leave blank for default" className="text-sm" />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">Left (px)</label><Input type="number" value={padL} onChange={(e) => setPadL(parseInt(e.target.value) || 0)} /></div>
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">Right (px)</label><Input type="number" value={padR} onChange={(e) => setPadR(parseInt(e.target.value) || 0)} /></div>
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">Top (px)</label><Input type="number" value={padT} onChange={(e) => setPadT(parseInt(e.target.value) || 0)} /></div>
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">Bottom (px)</label><Input type="number" value={padB} onChange={(e) => setPadB(parseInt(e.target.value) || 0)} /></div>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Feathering: {feathering}</label>
+        <Slider value={[feathering]} onValueChange={(v) => setFeathering(v[0])} min={0} max={128} step={4} />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="space-y-1">
+          <label className="text-[10px] text-muted-foreground">Steps: {steps}</label>
+          <Slider value={[steps]} onValueChange={(v) => setSteps(v[0])} min={15} max={40} step={1} />
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] text-muted-foreground">Denoise: {denoise.toFixed(2)}</label>
+          <Slider value={[denoise]} onValueChange={(v) => setDenoise(v[0])} min={0.6} max={1.0} step={0.05} />
+        </div>
+      </div>
+      <Button onClick={submit} disabled={submitting || !imageUrl.trim() || !prompt.trim()} className="w-full bg-cyan-500 text-white">
+        {submitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Maximize2 className="w-4 h-4 mr-2" />}
+        Outpaint
+      </Button>
+      {result?.error && <div className="text-xs text-red-400">{result.error}</div>}
+      {result?.remote_job_id && (
+        <div className="text-xs text-muted-foreground">
+          Submitted: <code className="font-mono">{result.remote_job_id}</code> · ~${result.est_cost_usd?.toFixed(4)} · check Queue tab
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CharSheetPanel() {
+  const [prompt, setPrompt] = useState('')
+  const [negative, setNegative] = useState('')
+  const [width, setWidth] = useState(2048)
+  const [height, setHeight] = useState(1024)
+  const [steps, setSteps] = useState(30)
+  const [submitting, setSubmitting] = useState(false)
+  const [result, setResult] = useState<{ remote_job_id?: string; est_cost_usd?: number; error?: string } | null>(null)
+
+  const submit = async () => {
+    if (!prompt.trim()) return
+    setSubmitting(true); setResult(null)
+    try {
+      const res = await fetch('/api/m/character_sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: prompt.trim(),
+          negative: negative.trim() || undefined,
+          width, height, steps,
+        }),
+      })
+      const data = await res.json()
+      if (!data?.ok) setResult({ error: data?.error || 'submit failed' })
+      else setResult({ remote_job_id: data.remote_job_id, est_cost_usd: data.est_cost_usd })
+    } catch (e) {
+      setResult({ error: String(e) })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-purple-500/30 bg-purple-500/5 p-4 space-y-3">
+      <p className="text-xs text-muted-foreground">
+        Character turnaround sheet — front/side/back views on one wide canvas. Use as IP-Adapter reference
+        or LoRA training material.
+      </p>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Character description</label>
+        <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={4} placeholder="e.g. 1girl, long silver hair, blue eyes, red school uniform, detailed face" className="text-sm" />
+        <p className="text-[10px] text-muted-foreground">Multi-view suffix auto-added (front/side/back/turnaround)</p>
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Negative prompt (optional)</label>
+        <Input value={negative} onChange={(e) => setNegative(e.target.value)} className="text-sm" />
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">Width</label><Input type="number" value={width} onChange={(e) => setWidth(parseInt(e.target.value) || 2048)} step={64} /></div>
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">Height</label><Input type="number" value={height} onChange={(e) => setHeight(parseInt(e.target.value) || 1024)} step={64} /></div>
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">Steps: {steps}</label><Slider value={[steps]} onValueChange={(v) => setSteps(v[0])} min={20} max={45} step={1} /></div>
+      </div>
+      <Button onClick={submit} disabled={submitting || !prompt.trim()} className="w-full bg-purple-500 text-white">
+        {submitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Users className="w-4 h-4 mr-2" />}
+        Generate Sheet
+      </Button>
+      {result?.error && <div className="text-xs text-red-400">{result.error}</div>}
+      {result?.remote_job_id && (
+        <div className="text-xs text-muted-foreground">
+          Submitted: <code className="font-mono">{result.remote_job_id}</code> · ~${result.est_cost_usd?.toFixed(4)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function LtxVideoPanel() {
+  const [prompt, setPrompt] = useState('')
+  const [imageUrl, setImageUrl] = useState('')
+  const [negative, setNegative] = useState('')
+  const [width, setWidth] = useState(768)
+  const [height, setHeight] = useState(512)
+  const [length, setLength] = useState(97)
+  const [fps, setFps] = useState(25)
+  const [steps, setSteps] = useState(30)
+  const [submitting, setSubmitting] = useState(false)
+  const [result, setResult] = useState<{ remote_job_id?: string; est_cost_usd?: number; mode?: string; error?: string } | null>(null)
+  const [dlInfo, setDlInfo] = useState<{ downloads?: Array<{ filename: string; size_mb_approx?: number }>; example_powershell?: string } | null>(null)
+
+  const submit = async () => {
+    if (!prompt.trim()) return
+    setSubmitting(true); setResult(null)
+    try {
+      const res = await fetch('/api/m/ltx_video', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: prompt.trim(),
+          image_url: imageUrl.trim() || undefined,
+          negative: negative.trim() || undefined,
+          width, height, length, fps, steps,
+        }),
+      })
+      const data = await res.json()
+      if (!data?.ok) setResult({ error: data?.error || 'submit failed' })
+      else setResult({ remote_job_id: data.remote_job_id, est_cost_usd: data.est_cost_usd, mode: data.mode })
+    } catch (e) {
+      setResult({ error: String(e) })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const loadDlInfo = async () => {
+    try {
+      const res = await fetch('/api/m/ltx_dl_info')
+      const data = await res.json()
+      if (data?.ok) setDlInfo({ downloads: data.downloads, example_powershell: data.example_powershell })
+    } catch {}
+  }
+
+  return (
+    <div className="rounded-xl border border-orange-500/30 bg-orange-500/5 p-4 space-y-3">
+      <p className="text-xs text-muted-foreground">
+        LTX Video 0.9.5 — fast &amp; cheap video (~4-6× cheaper than Wan). Text-to-video or image-to-video.
+        <strong> Requires model DL first.</strong>
+      </p>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Prompt</label>
+        <Textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} placeholder="e.g. a woman walking through a neon-lit city at night, cinematic" className="text-sm" />
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Source Image URL (optional, for I2V)</label>
+        <Input value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="Leave blank for text-to-video" className="text-sm" />
+      </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Negative prompt (optional)</label>
+        <Input value={negative} onChange={(e) => setNegative(e.target.value)} className="text-sm" />
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">Width</label><Input type="number" value={width} onChange={(e) => setWidth(parseInt(e.target.value) || 768)} step={32} /></div>
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">Height</label><Input type="number" value={height} onChange={(e) => setHeight(parseInt(e.target.value) || 512)} step={32} /></div>
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">Frames: {length}</label><Slider value={[length]} onValueChange={(v) => setLength(v[0])} min={25} max={161} step={8} /></div>
+        <div className="space-y-1"><label className="text-[10px] text-muted-foreground">FPS</label><Input type="number" value={fps} onChange={(e) => setFps(parseInt(e.target.value) || 25)} /></div>
+        <div className="space-y-1 col-span-2"><label className="text-[10px] text-muted-foreground">Steps: {steps}</label><Slider value={[steps]} onValueChange={(v) => setSteps(v[0])} min={20} max={45} step={1} /></div>
+      </div>
+      <Button onClick={submit} disabled={submitting || !prompt.trim()} className="w-full bg-orange-500 text-white">
+        {submitting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Film className="w-4 h-4 mr-2" />}
+        {imageUrl.trim() ? 'Generate (I2V)' : 'Generate (T2V)'}
+      </Button>
+      {result?.error && <div className="text-xs text-red-400">{result.error}</div>}
+      {result?.remote_job_id && (
+        <div className="text-xs text-muted-foreground">
+          Submitted ({result.mode}): <code className="font-mono">{result.remote_job_id}</code> · ~${result.est_cost_usd?.toFixed(4)}
+        </div>
+      )}
+      <div className="pt-2 border-t border-border/40">
+        <button onClick={loadDlInfo} className="text-xs text-orange-400 underline">Show model DL info</button>
+        {dlInfo && (
+          <div className="mt-2 space-y-1 text-[10px] font-mono text-muted-foreground">
+            {dlInfo.downloads?.map((d, i) => (
+              <div key={i}>• {d.filename} (~{d.size_mb_approx}MB)</div>
+            ))}
+            {dlInfo.example_powershell && (
+              <pre className="text-[9px] whitespace-pre-wrap bg-black/40 p-2 rounded mt-1">{dlInfo.example_powershell}</pre>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 
 function ModelsTab() {
   const [data, setData] = useState<InventoryResp | null>(null)

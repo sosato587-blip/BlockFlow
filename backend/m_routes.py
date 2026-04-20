@@ -835,6 +835,276 @@ def build_illustrious_workflow(
 
 
 # ============================================================
+# Phase 12: Outpaint (extend canvas outward)
+# ============================================================
+
+def build_illustrious_outpaint_workflow(
+    image_filename: str,
+    prompt: str,
+    pad_left: int = 0,
+    pad_right: int = 0,
+    pad_top: int = 0,
+    pad_bottom: int = 0,
+    feathering: int = 40,
+    steps: int = 25,
+    cfg: float = 7.0,
+    denoise: float = 1.0,
+    seed: int | None = None,
+    negative: str = NEGATIVE_DEFAULT,
+    loras: list[dict[str, Any]] | None = None,
+    sampler_name: str = "dpmpp_2m_sde",
+    scheduler: str = "karras",
+) -> dict[str, Any]:
+    """Outpaint via ImagePadForOutpaint -> VAEEncodeForInpaint -> KSampler."""
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
+
+    wf: dict[str, Any] = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "waiIllustriousSDXL_v160.safetensors"},
+        },
+        "50": {"class_type": "LoadImage", "inputs": {"image": image_filename}},
+        "60": {
+            "class_type": "ImagePadForOutpaint",
+            "inputs": {
+                "image": ["50", 0],
+                "left": pad_left,
+                "top": pad_top,
+                "right": pad_right,
+                "bottom": pad_bottom,
+                "feathering": feathering,
+            },
+        },
+        "61": {
+            "class_type": "VAEEncodeForInpaint",
+            "inputs": {
+                "pixels": ["60", 0],
+                "vae": ["1", 2],
+                "mask": ["60", 1],
+                "grow_mask_by": 8,
+            },
+        },
+        "10": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": prompt}},
+        "11": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": negative}},
+        "6": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["10", 0],
+                "negative": ["11", 0],
+                "latent_image": ["61", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
+                "denoise": denoise,
+            },
+        },
+        "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["7", 0], "filename_prefix": "IL_outpaint"},
+        },
+    }
+
+    if loras:
+        prev_model = "1"; prev_clip = "1"
+        for i, lora in enumerate(loras):
+            nid = f"300{i}"
+            wf[nid] = {
+                "class_type": "LoraLoader",
+                "inputs": {
+                    "model": [prev_model, 0],
+                    "clip": [prev_clip, 1],
+                    "lora_name": str(lora.get("name")),
+                    "strength_model": float(lora.get("strength", 1.0)),
+                    "strength_clip": float(lora.get("strength", 1.0)),
+                },
+            }
+            prev_model = nid; prev_clip = nid
+        wf["6"]["inputs"]["model"] = [prev_model, 0]
+        wf["10"]["inputs"]["clip"] = [prev_clip, 1]
+        wf["11"]["inputs"]["clip"] = [prev_clip, 1]
+
+    return wf
+
+
+# ============================================================
+# Phase 14: Character Sheet (multi-view on a wide canvas)
+# ============================================================
+
+CHARACTER_SHEET_PROMPT_SUFFIX = (
+    ", character sheet, multiple views of the same character, "
+    "front view, three-quarter view, side view, back view, "
+    "turnaround, reference sheet, consistent character design, "
+    "full body, neutral pose, white background, masterpiece"
+)
+
+def build_character_sheet_workflow(
+    prompt: str,
+    width: int = 2048,
+    height: int = 1024,
+    steps: int = 30,
+    cfg: float = 7.0,
+    seed: int | None = None,
+    negative: str = NEGATIVE_DEFAULT,
+    loras: list[dict[str, Any]] | None = None,
+    sampler_name: str = "dpmpp_2m_sde",
+    scheduler: str = "karras",
+) -> dict[str, Any]:
+    """Wide canvas character turnaround (prompt-driven, SDXL Illustrious)."""
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
+
+    full_prompt = prompt.strip().rstrip(",") + CHARACTER_SHEET_PROMPT_SUFFIX
+
+    wf: dict[str, Any] = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "waiIllustriousSDXL_v160.safetensors"},
+        },
+        "5": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": width, "height": height, "batch_size": 1},
+        },
+        "10": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": full_prompt}},
+        "11": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": negative}},
+        "6": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["10", 0],
+                "negative": ["11", 0],
+                "latent_image": ["5", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
+                "denoise": 1.0,
+            },
+        },
+        "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["7", 0], "filename_prefix": "IL_charsheet"},
+        },
+    }
+
+    if loras:
+        prev_model = "1"; prev_clip = "1"
+        for i, lora in enumerate(loras):
+            nid = f"400{i}"
+            wf[nid] = {
+                "class_type": "LoraLoader",
+                "inputs": {
+                    "model": [prev_model, 0],
+                    "clip": [prev_clip, 1],
+                    "lora_name": str(lora.get("name")),
+                    "strength_model": float(lora.get("strength", 1.0)),
+                    "strength_clip": float(lora.get("strength", 1.0)),
+                },
+            }
+            prev_model = nid; prev_clip = nid
+        wf["6"]["inputs"]["model"] = [prev_model, 0]
+        wf["10"]["inputs"]["clip"] = [prev_clip, 1]
+        wf["11"]["inputs"]["clip"] = [prev_clip, 1]
+
+    return wf
+
+
+# ============================================================
+# Phase 16: LTX Video (fast, cheap T2V/I2V)
+# ============================================================
+
+def build_ltx_video_workflow(
+    prompt: str,
+    image_filename: str | None = None,
+    width: int = 768,
+    height: int = 512,
+    length: int = 97,
+    fps: int = 25,
+    steps: int = 30,
+    cfg: float = 3.0,
+    seed: int | None = None,
+    negative: str = "low quality, blurry, distorted, static, no movement",
+) -> dict[str, Any]:
+    """LTX Video 0.9.5 workflow. T2V if image_filename is None, otherwise I2V."""
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
+
+    wf: dict[str, Any] = {
+        "10": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "ltx-video-2b-v0.9.5.safetensors"},
+        },
+        "11": {
+            "class_type": "CLIPLoader",
+            "inputs": {"clip_name": "t5xxl_fp16.safetensors", "type": "ltxv"},
+        },
+        "20": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["11", 0], "text": prompt}},
+        "21": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["11", 0], "text": negative}},
+        "30": {
+            "class_type": "EmptyLTXVLatentVideo",
+            "inputs": {"width": width, "height": height, "length": length, "batch_size": 1},
+        },
+        "40": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["10", 0],
+                "positive": ["20", 0],
+                "negative": ["21", 0],
+                "latent_image": ["30", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 1.0,
+            },
+        },
+        "50": {"class_type": "VAEDecode", "inputs": {"samples": ["40", 0], "vae": ["10", 2]}},
+        "60": {
+            "class_type": "VHS_VideoCombine",
+            "inputs": {
+                "images": ["50", 0],
+                "frame_rate": fps,
+                "loop_count": 0,
+                "filename_prefix": "LTX_mobile",
+                "format": "video/h264-mp4",
+                "pingpong": False,
+                "save_output": True,
+            },
+        },
+    }
+
+    # I2V mode: LoadImage -> LTXVImgToVideo (replaces EmptyLTXVLatentVideo)
+    if image_filename:
+        wf["25"] = {"class_type": "LoadImage", "inputs": {"image": image_filename}}
+        wf["30"] = {
+            "class_type": "LTXVImgToVideo",
+            "inputs": {
+                "positive": ["20", 0],
+                "negative": ["21", 0],
+                "vae": ["10", 2],
+                "image": ["25", 0],
+                "width": width,
+                "height": height,
+                "length": length,
+                "batch_size": 1,
+            },
+        }
+        # LTXVImgToVideo returns (positive, negative, latent)
+        wf["40"]["inputs"]["positive"] = ["30", 0]
+        wf["40"]["inputs"]["negative"] = ["30", 1]
+        wf["40"]["inputs"]["latent_image"] = ["30", 2]
+
+    return wf
+
+
+# ============================================================
 # Routes
 # ============================================================
 
@@ -2044,4 +2314,207 @@ def _do_inventory() -> JSONResponse:
         "grand_total": {"files": grand_files, "size_mb": round(grand_mb, 1)},
         "errors": errors if errors else None,
         "fetched_at": time.time(),
+    })
+
+
+# ============================================================
+# Phase 12 / 14 / 16 endpoints
+# ============================================================
+
+@router.post("/api/m/outpaint")
+async def m_outpaint(request: Request) -> JSONResponse:
+    """Outpaint (extend canvas). Body: image_url, prompt, pad_left/right/top/bottom, ..."""
+    import traceback
+    try:
+        payload = await request.json()
+        image_url = str(payload.get("image_url") or "").strip()
+        prompt = str(payload.get("prompt") or "").strip()
+        if not image_url or not prompt:
+            return JSONResponse({"ok": False, "error": "image_url and prompt required"}, status_code=400)
+
+        endpoint_id = str(payload.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
+        if not endpoint_id:
+            return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=400)
+
+        image_filename = "m_outpaint_src.png"
+        seed = payload.get("seed")
+        wf = build_illustrious_outpaint_workflow(
+            image_filename=image_filename,
+            prompt=prompt,
+            pad_left=int(payload.get("pad_left") or 0),
+            pad_right=int(payload.get("pad_right") or 0),
+            pad_top=int(payload.get("pad_top") or 0),
+            pad_bottom=int(payload.get("pad_bottom") or 0),
+            feathering=int(payload.get("feathering") or 40),
+            steps=int(payload.get("steps") or 25),
+            cfg=float(payload.get("cfg") or 7.0),
+            denoise=float(payload.get("denoise") or 1.0),
+            seed=int(seed) if seed is not None else None,
+            negative=str(payload.get("negative") or NEGATIVE_DEFAULT),
+            loras=payload.get("loras") or [],
+            sampler_name=str(payload.get("sampler_name") or "dpmpp_2m_sde"),
+            scheduler=str(payload.get("scheduler") or "karras"),
+        )
+        file_inputs = {"50": {"url": image_url, "filename": image_filename, "field": "image"}}
+
+        try:
+            remote_job_id = services._submit_job(endpoint_id, {
+                "workflow": wf, "file_inputs": file_inputs, "timeout": 600,
+            })
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"submit failed: {e}"}, status_code=502)
+
+        est = m_store.estimate_cost(model="illustrious", width=1024, height=1536, steps=int(payload.get("steps") or 25))
+        m_store.log_cost({
+            "model": "illustrious_outpaint",
+            "steps": int(payload.get("steps") or 25),
+            "est_cost_usd": round(est, 4),
+            "remote_job_id": remote_job_id,
+        })
+        return JSONResponse({
+            "ok": True, "remote_job_id": remote_job_id, "endpoint_id": endpoint_id,
+            "est_cost_usd": round(est, 4), "submitted_at": time.time(),
+        })
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/outpaint] ERROR: {e}\n{tb}", flush=True)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@router.post("/api/m/character_sheet")
+async def m_character_sheet(request: Request) -> JSONResponse:
+    """Generate a character turnaround sheet (wide canvas, multi-view)."""
+    import traceback
+    try:
+        payload = await request.json()
+        prompt = str(payload.get("prompt") or "").strip()
+        if not prompt:
+            return JSONResponse({"ok": False, "error": "prompt required"}, status_code=400)
+        endpoint_id = str(payload.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
+        if not endpoint_id:
+            return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=400)
+
+        seed = payload.get("seed")
+        width = int(payload.get("width") or 2048)
+        height = int(payload.get("height") or 1024)
+        steps = int(payload.get("steps") or 30)
+        wf = build_character_sheet_workflow(
+            prompt=prompt,
+            width=width, height=height, steps=steps,
+            cfg=float(payload.get("cfg") or 7.0),
+            seed=int(seed) if seed is not None else None,
+            negative=str(payload.get("negative") or NEGATIVE_DEFAULT),
+            loras=payload.get("loras") or [],
+            sampler_name=str(payload.get("sampler_name") or "dpmpp_2m_sde"),
+            scheduler=str(payload.get("scheduler") or "karras"),
+        )
+        try:
+            remote_job_id = services._submit_job(endpoint_id, {"workflow": wf, "timeout": 600})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"submit failed: {e}"}, status_code=502)
+
+        est = m_store.estimate_cost(model="illustrious", width=width, height=height, steps=steps)
+        m_store.log_cost({
+            "model": "character_sheet", "steps": steps,
+            "est_cost_usd": round(est, 4), "remote_job_id": remote_job_id,
+        })
+        return JSONResponse({
+            "ok": True, "remote_job_id": remote_job_id, "endpoint_id": endpoint_id,
+            "est_cost_usd": round(est, 4), "submitted_at": time.time(),
+        })
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/character_sheet] ERROR: {e}\n{tb}", flush=True)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@router.post("/api/m/ltx_video")
+async def m_ltx_video(request: Request) -> JSONResponse:
+    """LTX Video generation (T2V or I2V). Requires LTX model + t5xxl text encoder on RunPod."""
+    import traceback
+    try:
+        payload = await request.json()
+        prompt = str(payload.get("prompt") or "").strip()
+        if not prompt:
+            return JSONResponse({"ok": False, "error": "prompt required"}, status_code=400)
+        endpoint_id = str(payload.get("endpoint_id") or config.RUNPOD_ENDPOINT_ID or "").strip()
+        if not endpoint_id:
+            return JSONResponse({"ok": False, "error": "endpoint_id required"}, status_code=400)
+
+        image_url = str(payload.get("image_url") or "").strip()
+        seed = payload.get("seed")
+        width = int(payload.get("width") or 768)
+        height = int(payload.get("height") or 512)
+        length = int(payload.get("length") or 97)
+        steps = int(payload.get("steps") or 30)
+
+        image_filename = "m_ltx_src.png" if image_url else None
+        wf = build_ltx_video_workflow(
+            prompt=prompt, image_filename=image_filename,
+            width=width, height=height, length=length,
+            fps=int(payload.get("fps") or 25),
+            steps=steps, cfg=float(payload.get("cfg") or 3.0),
+            seed=int(seed) if seed is not None else None,
+            negative=str(payload.get("negative") or "low quality, blurry, static, no movement"),
+        )
+        file_inputs = None
+        if image_url:
+            file_inputs = {"25": {"url": image_url, "filename": image_filename, "field": "image"}}
+
+        job_body: dict[str, Any] = {"workflow": wf, "timeout": 900}
+        if file_inputs:
+            job_body["file_inputs"] = file_inputs
+        try:
+            remote_job_id = services._submit_job(endpoint_id, job_body)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": f"submit failed: {e}"}, status_code=502)
+
+        # LTX is ~4-6x cheaper than Wan — use a flat low estimate
+        est = round(0.02 + 0.001 * steps + 0.0005 * length, 4)
+        m_store.log_cost({
+            "model": "ltx_video",
+            "steps": steps, "length": length,
+            "est_cost_usd": est, "remote_job_id": remote_job_id,
+        })
+        return JSONResponse({
+            "ok": True, "remote_job_id": remote_job_id, "endpoint_id": endpoint_id,
+            "est_cost_usd": est, "mode": "i2v" if image_url else "t2v",
+            "submitted_at": time.time(),
+        })
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[m/ltx_video] ERROR: {e}\n{tb}", flush=True)
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=500)
+
+
+@router.get("/api/m/ltx_dl_info")
+async def m_ltx_dl_info() -> JSONResponse:
+    """Return DL payload for LTX Video model + text encoder."""
+    return JSONResponse({
+        "ok": True,
+        "note": "Run these two download jobs on RunPod endpoint before using /api/m/ltx_video",
+        "downloads": [
+            {
+                "source": "url",
+                "url": "https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2b-v0.9.5.safetensors",
+                "dest": "checkpoints",
+                "filename": "ltx-video-2b-v0.9.5.safetensors",
+                "size_mb_approx": 9200,
+            },
+            {
+                "source": "url",
+                "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors",
+                "dest": "text_encoders",
+                "filename": "t5xxl_fp16.safetensors",
+                "size_mb_approx": 9800,
+                "note": "If t5xxl_fp16 already present (Flux/other), skip this",
+            },
+        ],
+        "example_powershell": (
+            "$b = @{ input = @{ command = 'download'; downloads = @(@{"
+            "source='url'; url='https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2b-v0.9.5.safetensors'; "
+            "dest='checkpoints'; filename='ltx-video-2b-v0.9.5.safetensors' }) } } | ConvertTo-Json -Depth 10; "
+            "Invoke-RestMethod -Uri \"https://api.runpod.ai/v2/$env:RUNPOD_ENDPOINT_ID/run\" -Method POST "
+            "-Headers @{ Authorization = \"Bearer $env:RUNPOD_API_KEY\"; 'Content-Type'='application/json' } -Body $b"
+        ),
     })
