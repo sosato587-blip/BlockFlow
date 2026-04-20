@@ -382,7 +382,7 @@ function WanFunControlBlock({
             value={displayPrompt}
             onChange={(e) => promptBinding?.setLocalValue(e.target.value)}
             placeholder="anime character dancing, smooth motion..."
-            className="min-h-[60px] resize-y text-xs"
+            className="min-h-[160px] max-h-[480px] resize-y text-xs"
           />
         )}
       </div>

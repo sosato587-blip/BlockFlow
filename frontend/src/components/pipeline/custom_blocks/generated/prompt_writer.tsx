@@ -405,7 +405,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
         <CollapsibleContent>
           <Textarea value={activeSystemPrompt}
             onChange={(e) => updateLocal({ system_prompt: e.target.value })}
-            className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto mt-1.5 text-xs" />
+            className="min-h-[160px] max-h-[480px] resize-y overflow-y-auto mt-1.5 text-xs" />
         </CollapsibleContent>
       </Collapsible>
 
@@ -426,7 +426,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
               ? 'Describe what kind of image prompt you want...'
               : 'Describe what kind of video prompt you want...'
           }
-          className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto text-xs" />
+          className="min-h-[160px] max-h-[480px] resize-y overflow-y-auto text-xs" />
         {/* Extra user prompts */}
         {extraUserPrompts.length > 0 && (
           <div className="space-y-1">
@@ -465,7 +465,7 @@ function PromptWriterBlock({ blockId, setOutput, registerExecute, setStatusMessa
                         value={extra}
                         onChange={(e) => setExtraUserPrompts((prev) => { const arr = [...prev]; arr[idx] = e.target.value; return arr })}
                         placeholder={`User prompt ${idx + 2}...`}
-                        className="min-h-[60px] max-h-[100px] resize-y overflow-y-auto text-xs border-violet-500/30"
+                        className="min-h-[160px] max-h-[400px] resize-y overflow-y-auto text-xs border-violet-500/30"
                       />
                     </div>
                   ) : (
