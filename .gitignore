@@ -15,10 +15,10 @@ prompt_writer_settings.json
 # Flow data (tracked for multi-machine sync)
 # flows/*.flow.json
 
-# Dev artifacts
-architecture.md
+# Dev artifacts — ignore lowercase variants only (ARCHITECTURE.md is tracked)
+/architecture.md
 frontend/architecture.md
-issues.md
+/issues.md
 frontend/issues.md
 logs.txt
 
