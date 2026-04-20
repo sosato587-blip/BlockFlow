@@ -310,13 +310,69 @@ def _get_loras(refresh: bool = False) -> tuple[dict[str, list[str]], str | None,
     return {"high": [], "low": []}, err, False
 
 
+_MOCK_JOB_REGISTRY: dict[str, dict[str, Any]] = {}
+
+
+def _is_video_job(job_input: dict[str, Any]) -> bool:
+    """Heuristic: inspect workflow for video-ish node class types."""
+    try:
+        wf = job_input.get("workflow") or {}
+        if not isinstance(wf, dict):
+            return False
+        for node in wf.values():
+            if not isinstance(node, dict):
+                continue
+            ct = str(node.get("class_type", "")).lower()
+            if "video" in ct or "ltxv" in ct or "wan" in ct or "vhs" in ct:
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _submit_job(endpoint_id: str, job_input: dict[str, Any]) -> str:
+    if config.MOCK_RUNPOD:
+        import uuid
+        mock_id = f"mock-{uuid.uuid4().hex[:12]}"
+        _MOCK_JOB_REGISTRY[mock_id] = {
+            "submitted_at": _now(),
+            "is_video": _is_video_job(job_input),
+        }
+        print(f"[mock-runpod] _submit_job -> {mock_id} (endpoint={endpoint_id})", flush=True)
+        return mock_id
     url = f"{config.RUNPOD_API_BASE}/{endpoint_id}/run"
     resp = _request_json("POST", url, {"input": job_input}, timeout=config.HTTP_TIMEOUT_SEC)
     job_id = resp.get("id")
     if not job_id:
         raise RuntimeError(f"RunPod submit response missing job id: {resp}")
     return str(job_id)
+
+
+def _mock_status_response(remote_job_id: str) -> dict[str, Any]:
+    """Build a fake RunPod status response; returns IN_PROGRESS briefly, then COMPLETED."""
+    entry = _MOCK_JOB_REGISTRY.get(remote_job_id) or {}
+    elapsed = _now() - float(entry.get("submitted_at", _now()))
+    is_video = bool(entry.get("is_video"))
+    url = config.MOCK_RUNPOD_VIDEO_URL if is_video else config.MOCK_RUNPOD_IMAGE_URL
+    fname = "mock_video.mp4" if is_video else "mock_image.png"
+    if elapsed < config.MOCK_RUNPOD_DELAY_SEC:
+        return {
+            "id": remote_job_id,
+            "status": "IN_PROGRESS",
+            "output": {"message": "mock: generating", "percent": min(90, int(elapsed * 90 / max(config.MOCK_RUNPOD_DELAY_SEC, 0.01)))},
+        }
+    return {
+        "id": remote_job_id,
+        "status": "COMPLETED",
+        "output": {
+            "message": "mock: done",
+            "percent": 100,
+            "files": [{"filename": fname, "url": url}],
+            "images": [{"filename": fname, "url": url}],
+            "videos": [{"filename": fname, "url": url}] if is_video else [],
+            "url": url,
+        },
+    }
 
 
 def _extract_runpod_progress(resp: dict[str, Any]) -> dict[str, Any] | None:
@@ -337,7 +393,10 @@ def _poll_status(endpoint_id: str, remote_job_id: str, timeout_sec: int = config
     last_status = None
 
     while True:
-        resp = _request_json("GET", url, None, timeout=config.HTTP_TIMEOUT_SEC)
+        if config.MOCK_RUNPOD or str(remote_job_id).startswith("mock-"):
+            resp = _mock_status_response(remote_job_id)
+        else:
+            resp = _request_json("GET", url, None, timeout=config.HTTP_TIMEOUT_SEC)
         status = str(resp.get("status", "UNKNOWN")).upper()
         if status != last_status:
             last_status = status

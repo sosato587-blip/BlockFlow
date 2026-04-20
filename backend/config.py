@@ -34,6 +34,19 @@ RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY", "")
 RUNPOD_ENDPOINT_ID = os.getenv("RUNPOD_ENDPOINT_ID", "")
 RUNPOD_API_BASE = os.getenv("RUNPOD_API_BASE", "https://api.runpod.ai/v2")
 
+# Mock mode: short-circuit all RunPod calls with fake COMPLETED responses.
+# Use for UAT/testing without burning GPU credits. Enable with BLOCKFLOW_MOCK_RUNPOD=1.
+MOCK_RUNPOD = os.getenv("BLOCKFLOW_MOCK_RUNPOD", "").strip().lower() in ("1", "true", "yes")
+MOCK_RUNPOD_IMAGE_URL = os.getenv(
+    "BLOCKFLOW_MOCK_IMAGE_URL",
+    "https://placehold.co/832x1216/1a1a2e/e0e0ff.png?text=MOCK+IMAGE",
+)
+MOCK_RUNPOD_VIDEO_URL = os.getenv(
+    "BLOCKFLOW_MOCK_VIDEO_URL",
+    "https://placehold.co/832x480/1a1a2e/e0e0ff.mp4?text=MOCK+VIDEO",
+)
+MOCK_RUNPOD_DELAY_SEC = float(os.getenv("BLOCKFLOW_MOCK_DELAY_SEC", "1.0"))
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_API_BASE = os.getenv("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
 OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "").strip()
