@@ -72,6 +72,7 @@ interface Wan22I2vPayload {
   seed_mode: 'random' | 'fixed'
   seed: number
   loras?: LoraEntry[]
+  base_model?: { family?: string; ckpt_dir?: string; checkpoint?: string }
 }
 
 async function submitWan22I2vJob(payload: Wan22I2vPayload) {
@@ -293,6 +294,10 @@ function Wan22ImageToVideoBlock({
       const runLoras = (freshInputs.loras as LoraEntry[] | undefined)
         ?.filter((l) => l.name && l.name !== '__none__') ?? []
 
+      const baseModel = freshInputs.base_model as
+        | { family?: string; ckpt_dir?: string; checkpoint?: string }
+        | undefined
+
       setExecutionStatus?.('running')
       setStatusMessage('Submitting…')
       pushStatus('Submitting jobs...')
@@ -315,6 +320,7 @@ function Wan22ImageToVideoBlock({
             seed_mode: seedMode,
             seed: seedMode === 'fixed' ? seed + idx : seed,
             loras: runLoras.length > 0 ? runLoras : undefined,
+            base_model: baseModel?.checkpoint ? baseModel : undefined,
           }
 
           const res = await submitWan22I2vJob(payload)
@@ -563,6 +569,7 @@ export const blockDef: BlockDef = {
     { name: 'image', kind: PORT_IMAGE, required: false },
     { name: 'prompt', kind: PORT_TEXT, required: false },
     { name: 'loras', kind: PORT_LORAS, required: false },
+    { name: 'base_model', kind: 'base_model', required: false },
   ],
   outputs: [
     { name: 'video', kind: PORT_VIDEO },

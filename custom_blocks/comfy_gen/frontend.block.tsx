@@ -1081,6 +1081,29 @@ function ComfyGenBlock({
 
       const { fileInputs, overrides: baseOverrides, bypassLoras } = buildBaseOverrides(freshInputs)
 
+      // H2: auto-apply base_model checkpoint override from upstream Base Model Selector.
+      // Scans the parsed workflow for CheckpointLoaderSimple/CheckpointLoader/UNETLoader nodes
+      // and injects `${node_id}.ckpt_name` (or `.unet_name`) into the overrides dict.
+      // No-op when the `base_model` input is unwired or checkpoint is blank.
+      const baseModelInput = freshInputs.base_model as
+        | { family?: string; ckpt_dir?: string; checkpoint?: string }
+        | undefined
+      if (baseModelInput && typeof baseModelInput.checkpoint === 'string' && baseModelInput.checkpoint) {
+        const ckpt = baseModelInput.checkpoint
+        for (const [nodeId, nodeRaw] of Object.entries(workflow)) {
+          const node = nodeRaw as { class_type?: string; inputs?: Record<string, unknown> } | undefined
+          if (!node || typeof node !== 'object') continue
+          const ct = node.class_type || ''
+          if (ct === 'CheckpointLoaderSimple' || ct === 'CheckpointLoader') {
+            const key = `${nodeId}.ckpt_name`
+            if (baseOverrides[key] === undefined) baseOverrides[key] = ckpt
+          } else if (ct === 'UNETLoader') {
+            const key = `${nodeId}.unet_name`
+            if (baseOverrides[key] === undefined) baseOverrides[key] = ckpt
+          }
+        }
+      }
+
       // --- BATCH PATH ---
       const axes = automateEnabled
         ? computeAxesPure({ ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags })
@@ -2040,6 +2063,7 @@ export const blockDef: BlockDef = {
     { name: 'image', kind: PORT_IMAGE, required: false },
     { name: 'video', kind: PORT_VIDEO, required: false },
     { name: 'prompt', kind: PORT_TEXT, required: false },
+    { name: 'base_model', kind: 'base_model', required: false },
   ],
   outputs: [
     { name: 'image', kind: PORT_IMAGE },

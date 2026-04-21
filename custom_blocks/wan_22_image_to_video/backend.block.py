@@ -41,6 +41,7 @@ async def run(request: Request) -> JSONResponse:
     seed = payload.get("seed")
     loras = payload.get("loras", [])
     negative_prompt = str(payload.get("negative_prompt", config.DEFAULT_NEGATIVE_PROMPT))
+    base_model = payload.get("base_model") or None
 
     if not endpoint_id:
         return JSONResponse({"ok": False, "error": "endpoint_id is required"}, status_code=400)
@@ -64,6 +65,12 @@ async def run(request: Request) -> JSONResponse:
                 job_input["loras"] = loras
             if seed_mode == "fixed" and seed is not None:
                 job_input["seed"] = int(seed)
+            # H2: forward base-model selection from upstream Base Model Selector.
+            if isinstance(base_model, dict):
+                ckpt = base_model.get("checkpoint")
+                if ckpt:
+                    job_input["checkpoint"] = str(ckpt)
+                    job_input["base_model"] = base_model
 
             print(f"[wan22-i2v] RunPod payload for job {job_id}:\n{json.dumps(job_input, indent=2, default=str)}", flush=True)
 

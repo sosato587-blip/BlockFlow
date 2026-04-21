@@ -25,6 +25,7 @@ async def run(request: Request) -> JSONResponse:
     seed = payload.get("seed")
     loras = payload.get("loras", [])
     negative_prompt = str(payload.get("negative_prompt", config.DEFAULT_NEGATIVE_PROMPT))
+    base_model = payload.get("base_model") or None
 
     if not endpoint_id:
         return JSONResponse({"ok": False, "error": "endpoint_id is required"}, status_code=400)
@@ -46,6 +47,14 @@ async def run(request: Request) -> JSONResponse:
             job_input["loras"] = loras
         if seed_mode == "fixed" and seed is not None:
             job_input["seed"] = int(seed)
+        # H2: forward base-model selection when wired from Base Model Selector.
+        # The RunPod handler can read job_input["checkpoint"] to override the
+        # default ckpt_name; if it doesn't, this is a no-op passthrough.
+        if isinstance(base_model, dict):
+            ckpt = base_model.get("checkpoint")
+            if ckpt:
+                job_input["checkpoint"] = str(ckpt)
+                job_input["base_model"] = base_model
 
         record = services._new_job_record(job_id, endpoint_id, job_input)
         with state.JOBS_LOCK:
