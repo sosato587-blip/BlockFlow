@@ -402,7 +402,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
         <CollapsibleContent>
           <Textarea value={activeSystemPrompt}
             onChange={(e) => updateLocal({ system_prompt: e.target.value })}
-            className="min-h-[160px] max-h-[480px] resize-y overflow-y-auto mt-1.5 text-xs" />
+            className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto mt-1.5 text-xs" />
         </CollapsibleContent>
       </Collapsible>
 
@@ -419,7 +419,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
         </div>
         <Textarea value={userPrompt} onChange={(e) => setUserPrompt(e.target.value)}
           placeholder="Describe what motion and camera movement you want for this image..."
-          className="min-h-[160px] max-h-[480px] resize-y overflow-y-auto text-xs" />
+          className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto text-xs" />
       </div>
 
       <AddPromptDialog open={addDialogOpen} onOpenChange={setAddDialogOpen}
