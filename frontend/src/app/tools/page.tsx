@@ -22,6 +22,55 @@ function readPrefill(): { target?: string; image_url?: string } {
 
 const ENDPOINT_LS_KEY = 'blockflow.endpoint_id'
 
+// LTX Video presets — shot-based defaults for common use cases.
+// NOTE: LTX 0.9.5 likes dimensions divisible by 32 and lengths of form 8n+1 (25/33/...97/105/121).
+type LtxPreset = {
+  id: string
+  label: string
+  description: string
+  width: number
+  height: number
+  length: number
+  fps: number
+  steps: number
+  promptTemplate: string
+  suffixHint: string
+}
+const LTX_PRESETS: LtxPreset[] = [
+  {
+    id: 'dance',
+    label: 'Dance (portrait)',
+    description: 'Full-body dance clip, 9:16 portrait, 97 frames',
+    width: 512, height: 768, length: 97, fps: 25, steps: 30,
+    promptTemplate: 'a woman dancing smoothly, full body, standing, facing viewer, arms at sides, legs slightly apart, studio lighting, cinematic',
+    suffixHint: 'full body, standing, facing viewer, dancing smoothly',
+  },
+  {
+    id: 'closeup',
+    label: 'Close-up',
+    description: 'Face close-up, square, soft subtle motion',
+    width: 768, height: 768, length: 65, fps: 25, steps: 30,
+    promptTemplate: 'a close-up of a woman, soft natural light, subtle expression change, shallow depth of field, cinematic portrait',
+    suffixHint: 'close-up, soft lighting, subtle expression',
+  },
+  {
+    id: 'wide',
+    label: 'Wide shot',
+    description: 'Wide cinematic landscape, 16:9, 97 frames',
+    width: 1024, height: 576, length: 97, fps: 25, steps: 30,
+    promptTemplate: 'a wide cinematic shot, establishing scene, atmospheric haze, slow push-in camera move, golden hour',
+    suffixHint: 'wide cinematic shot, establishing scene, atmospheric',
+  },
+  {
+    id: 'cinematic',
+    label: 'Cinematic',
+    description: 'Film look, anamorphic, 2.35:1-ish, 121 frames',
+    width: 960, height: 544, length: 121, fps: 25, steps: 35,
+    promptTemplate: 'cinematic film still, anamorphic lens flare, shallow depth of field, teal-orange color grading, 35mm film grain, moody lighting',
+    suffixHint: 'cinematic film look, shallow depth of field, teal-orange grading',
+  },
+]
+
 export default function ToolsPage() {
   const searchParams = useSearchParams()
   const [prefillUrl, setPrefillUrl] = useState<string | undefined>()
@@ -349,6 +398,33 @@ function LtxVideoCard({ prefillImageUrl, endpointId }: { prefillImageUrl?: strin
       <div className="space-y-1">
         <label className="text-xs text-muted-foreground">Negative (optional)</label>
         <Input value={negative} onChange={(e) => setNegative(e.target.value)} />
+      </div>
+
+      <div className="space-y-1">
+        <label className="text-[10px] text-muted-foreground uppercase tracking-wide">Presets</label>
+        <div className="flex flex-wrap gap-2">
+          {LTX_PRESETS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => {
+                setWidth(p.width); setHeight(p.height); setLength(p.length);
+                setFps(p.fps); setSteps(p.steps);
+                setPrompt((cur) => {
+                  const base = cur.trim()
+                  if (!base) return p.promptTemplate
+                  if (base.includes(p.suffixHint)) return base
+                  return `${base}, ${p.suffixHint}`
+                })
+              }}
+              className="px-2.5 py-1 text-[11px] rounded border border-orange-500/40 bg-orange-500/10 hover:bg-orange-500/20 text-orange-200"
+              title={p.description}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted-foreground">Preset fills resolution/length/fps/steps and appends a style hint to the prompt.</p>
       </div>
 
       <div className="grid grid-cols-3 gap-3">
