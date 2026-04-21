@@ -314,8 +314,26 @@ _MOCK_JOB_REGISTRY: dict[str, dict[str, Any]] = {}
 
 
 def _is_video_job(job_input: dict[str, Any]) -> bool:
-    """Heuristic: inspect workflow for video-ish node class types."""
+    """Heuristic: detect if a job input targets video output.
+
+    Covers three shapes used across the codebase:
+    1. m_routes / comfy_gen: `{"workflow": {node_id: {class_type: ...}}}`.
+    2. WAN custom blocks: top-level `{"task_type": "i2v", "frames": N, ...}`.
+    3. Any payload carrying an explicit `frames`/`length`/`num_frames` > 1.
+    """
     try:
+        # Shape 2/3: top-level task_type / frame-count hints (used by WAN blocks)
+        tt = str(job_input.get("task_type", "")).lower()
+        if tt in ("i2v", "t2v", "v2v", "fun_control", "video"):
+            return True
+        for key in ("frames", "length", "num_frames"):
+            try:
+                if int(job_input.get(key, 0) or 0) > 1:
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+        # Shape 1: nested workflow
         wf = job_input.get("workflow") or {}
         if not isinstance(wf, dict):
             return False
