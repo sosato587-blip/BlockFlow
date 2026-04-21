@@ -344,7 +344,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
   return (
     <div className="space-y-3">
       {!hasApiKey && (
-        <span className="text-xs text-yellow-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
+        <span className="text-xs text-red-500">OPENROUTER_API_KEY missing — configure it in your .env file</span>
       )}
 
       <div className="space-y-1.5">
@@ -400,7 +400,7 @@ function I2VPromptWriterBlock({ blockId, inputs, setOutput, registerExecute, set
         <CollapsibleContent>
           <Textarea value={activeSystemPrompt}
             onChange={(e) => updateLocal({ system_prompt: e.target.value })}
-            className="min-h-[60px] max-h-[120px] resize-y overflow-y-auto mt-1.5 text-xs" />
+            className="min-h-[160px] max-h-[280px] resize-y overflow-y-auto mt-1.5 text-xs" />
         </CollapsibleContent>
       </Collapsible>
 

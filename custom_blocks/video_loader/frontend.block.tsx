@@ -235,7 +235,20 @@ function VideoLoaderBlock({
       {uploadedVideoUrl && (
         <div className="space-y-1">
           <Label className="text-xs">Video URL</Label>
-          <Input value={uploadedVideoUrl} readOnly className="h-8 text-xs" />
+          <div className="flex gap-1">
+            <Input value={uploadedVideoUrl} readOnly className="h-8 text-xs" />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 px-2 text-[10px]"
+              onClick={() => navigator.clipboard.writeText(uploadedVideoUrl).catch(() => {})}
+              aria-label="Copy video URL to clipboard"
+              title="Copy URL"
+            >
+              Copy
+            </Button>
+          </div>
         </div>
       )}
     </div>

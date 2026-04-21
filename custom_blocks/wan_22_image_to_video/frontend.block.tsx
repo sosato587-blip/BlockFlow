@@ -475,8 +475,8 @@ function Wan22ImageToVideoBlock({
           <Textarea
             value={displayPrompt}
             onChange={(e) => promptBinding?.setLocalValue(e.target.value)}
-            placeholder="Type a prompt..."
-            className="min-h-[80px] resize-y text-xs"
+            placeholder="Type a prompt…"
+            className="min-h-[160px] resize-y text-xs"
           />
         )}
       </div>
