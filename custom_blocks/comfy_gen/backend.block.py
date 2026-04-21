@@ -1205,6 +1205,85 @@ def _download_output(url: str, job_id: str) -> Path:
     return path
 
 
+def _workflow_is_video(workflow: dict) -> bool:
+    """Heuristic: workflow produces video if it contains Wan/video nodes."""
+    video_hints = ("WanImageToVideo", "Wan22ImageToVideoLatent", "VHS_VideoCombine",
+                   "SaveAnimatedWEBP", "SaveWEBM", "VideoCombine", "LTXVideo")
+    try:
+        for node in workflow.values():
+            if isinstance(node, dict):
+                ct = str(node.get("class_type", ""))
+                if any(h in ct for h in video_hints):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _run_comfy_job_mock(job_id: str, workflow_path: str, file_inputs: dict[str, str],
+                        overrides: dict[str, str] | None = None,
+                        endpoint_id: str = "") -> None:
+    """Mock executor: simulates a comfy-gen run without hitting RunPod.
+
+    Enabled when BLOCKFLOW_MOCK_RUNPOD=1. Writes a COMPLETED record with
+    placeholder URLs so the Generate tab UI can be exercised without GPU cost.
+    """
+    t0 = time.time()
+    try:
+        services._update_job(job_id, status="SUBMITTING")
+        time.sleep(min(0.2, config.MOCK_RUNPOD_DELAY_SEC))
+        services._update_job(job_id, status="RUNNING",
+                             remote_status="IN_PROGRESS",
+                             progress_stage="running",
+                             progress_message="[mock] Running...")
+
+        # Load workflow to decide image vs video
+        try:
+            workflow = json.loads(Path(workflow_path).read_text(encoding="utf-8"))
+        except Exception:
+            workflow = {}
+        is_video = _workflow_is_video(workflow)
+        media_url = config.MOCK_RUNPOD_VIDEO_URL if is_video else config.MOCK_RUNPOD_IMAGE_URL
+
+        # Simulate the remaining delay
+        remaining = max(0.0, config.MOCK_RUNPOD_DELAY_SEC - 0.2)
+        time.sleep(remaining)
+
+        # Extract seed from overrides if any
+        seed: int | None = None
+        for k, v in (overrides or {}).items():
+            if k.endswith(".seed") or k.endswith(".noise_seed"):
+                try:
+                    seed = int(v)
+                    break
+                except ValueError:
+                    continue
+
+        services._update_job(
+            job_id,
+            status="COMPLETED",
+            video_url=str(media_url),
+            local_video_url=str(media_url),
+            local_image_url=str(media_url),
+            remote_job_id=f"mock-{job_id[:8]}",
+            seed=seed,
+            model_hashes={"mock": "mock"},
+            elapsed_seconds=round(time.time() - t0, 3),
+            progress_stage="done",
+            progress_message="[mock] Completed",
+        )
+        print(f"[comfy-gen:mock] Job {job_id} completed ({'video' if is_video else 'image'})",
+              flush=True)
+    except Exception as e:
+        services._update_job(job_id, status="FAILED", error=f"[mock] {e}",
+                             elapsed_seconds=round(time.time() - t0, 3))
+    finally:
+        try:
+            os.unlink(workflow_path)
+        except Exception:
+            pass
+
+
 def _run_comfy_job(job_id: str, workflow_path: str, file_inputs: dict[str, str],
                    overrides: dict[str, str] | None = None,
                    endpoint_id: str = "") -> None:
@@ -1618,7 +1697,11 @@ async def run(request: Request) -> JSONResponse:
         state.JOBS[job_id] = record
         state._persist_jobs_locked()
 
-    state.EXECUTOR.submit(_run_comfy_job, job_id, tmp.name, file_inputs, overrides, endpoint_id)
+    if config.MOCK_RUNPOD:
+        print(f"[comfy-gen:mock] /run dispatching mock runner for job {job_id}", flush=True)
+        state.EXECUTOR.submit(_run_comfy_job_mock, job_id, tmp.name, file_inputs, overrides, endpoint_id)
+    else:
+        state.EXECUTOR.submit(_run_comfy_job, job_id, tmp.name, file_inputs, overrides, endpoint_id)
 
     return JSONResponse({"ok": True, "job_id": job_id})
 
