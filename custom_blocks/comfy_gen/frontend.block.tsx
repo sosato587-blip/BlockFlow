@@ -484,6 +484,22 @@ function ComfyGenBlock({
   const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [workflowError, setWorkflowError] = useState('')
   const [cliMissing, setCliMissing] = useState<string | null>(null)
+  // Persist dismissal of the "comfy-gen CLI not found" warning across reloads.
+  // The CLI is only needed for the Sync button; the rest of the block works
+  // fine without it, so once the user has acknowledged the warning we hide it.
+  // localStorage is intentionally shared across all comfy_gen block instances
+  // (single global key) — the CLI's presence is a machine-level fact, not
+  // per-block.
+  const [cliWarningDismissed, setCliWarningDismissed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return window.localStorage.getItem('comfy_gen_cli_warning_dismissed') === '1'
+  })
+  const dismissCliWarning = useCallback(() => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('comfy_gen_cli_warning_dismissed', '1')
+    }
+    setCliWarningDismissed(true)
+  }, [])
   const [missingModels, setMissingModels] = useState<MissingModel[] | null>(null)
   const [downloadRunning, setDownloadRunning] = useState(false)
   const [downloadStatus, setDownloadStatus] = useState('')
@@ -728,14 +744,19 @@ function ComfyGenBlock({
           size="sm"
           className="h-5 px-1.5 text-[10px] text-muted-foreground hover:text-foreground gap-1"
           onClick={refreshCache}
-          disabled={cacheRefreshing}
+          disabled={cacheRefreshing || !!cliMissing}
+          title={
+            cliMissing
+              ? 'Sync requires the comfy-gen CLI (pip install comfy-gen, then restart).'
+              : 'Refresh the checkpoint / LoRA / endpoint cache from comfy-gen.'
+          }
         >
           <svg className={`w-3 h-3 ${cacheRefreshing ? 'animate-spin' : ''}`} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
           {cacheRefreshing ? (cacheStatus || 'Syncing…') : 'Sync'}
         </Button>
       </>
     )
-  }, [setHeaderActions, refreshCache, cacheRefreshing, cacheStatus, automateEnabled, combinationCount, setAutomateEnabled, batchRunning, batchDone, batchState])
+  }, [setHeaderActions, refreshCache, cacheRefreshing, cacheStatus, automateEnabled, combinationCount, setAutomateEnabled, batchRunning, batchDone, batchState, cliMissing])
 
   // Prompt binding for upstream text override
   // Filter to only show blocks that output a port named "prompt" (not generic text like URLs)
@@ -1651,10 +1672,22 @@ function ComfyGenBlock({
         </div>
       )}
 
-      {cliMissing && (
-        <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-[11px] text-yellow-200">
-          <span className="font-medium">comfy-gen CLI not found.</span>{' '}
-          Install it with <code className="rounded bg-muted px-1 py-0.5 text-[10px]">pip install comfy-gen</code> and restart the app.
+      {cliMissing && !cliWarningDismissed && (
+        <div className="rounded-md border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-[11px] text-yellow-200 flex items-start gap-2">
+          <div className="flex-1">
+            <span className="font-medium">comfy-gen CLI not found.</span>{' '}
+            Install it with <code className="rounded bg-muted px-1 py-0.5 text-[10px]">pip install comfy-gen</code> and restart the app.
+            <span className="ml-1 text-yellow-200/70">Only the Sync button needs it — everything else works without it.</span>
+          </div>
+          <button
+            type="button"
+            onClick={dismissCliWarning}
+            aria-label="Dismiss warning"
+            title="Dismiss (saved across reloads)"
+            className="shrink-0 rounded px-1.5 text-yellow-200/70 hover:text-yellow-100 hover:bg-yellow-500/20"
+          >
+            ×
+          </button>
         </div>
       )}
       {/* Progress */}
