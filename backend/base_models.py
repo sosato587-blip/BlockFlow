@@ -47,7 +47,7 @@ class BaseModelFamily:
 FAMILIES: dict[str, BaseModelFamily] = {
     "illustrious": BaseModelFamily(
         id="illustrious",
-        label="Illustrious XL (SDXL anime)",
+        label="Illustrious (anime)",
         description="Anime-styled SDXL derivative. Best for 2D anime / illustration.",
         ckpt_dir="checkpoints",
         sort_order=10,
@@ -68,7 +68,7 @@ FAMILIES: dict[str, BaseModelFamily] = {
     ),
     "wan_22": BaseModelFamily(
         id="wan_22",
-        label="Wan 2.2 (video, 14B)",
+        label="Wan 2.2 (video)",
         description="14B video diffusion (I2V / Fun Control). Uses wan_2.1_vae.",
         ckpt_dir="diffusion_models",
         sort_order=40,
@@ -82,7 +82,7 @@ FAMILIES: dict[str, BaseModelFamily] = {
     ),
     "ltx": BaseModelFamily(
         id="ltx",
-        label="LTX Video 0.9.5 (fast video)",
+        label="LTX Video (fast video)",
         description="Lightricks LTX 2B video model. ~4-6× cheaper than Wan.",
         ckpt_dir="diffusion_models",
         sort_order=60,
