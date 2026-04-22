@@ -287,6 +287,24 @@ def _run_lora_ssh_command() -> tuple[dict[str, list[str]], str | None]:
         return {"high": [], "low": []}, f"failed to fetch LoRAs: {e}"
 
 
+def _read_comfy_gen_lora_cache() -> list[str]:
+    """Fallback LoRA source: read the disk cache populated by `comfy-gen info`.
+
+    Used when `LORA_SOURCE_SSH_TARGET` isn't configured (the default on the
+    mini PC setup). Returns a flat list of LoRA filenames (or [] on failure).
+    """
+    try:
+        path = config.COMFY_GEN_INFO_CACHE_PATH
+        if not path.exists():
+            return []
+        import json as _json
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        loras = data.get("loras") or []
+        return [str(x) for x in loras if isinstance(x, str)]
+    except Exception:
+        return []
+
+
 def _get_loras(refresh: bool = False) -> tuple[dict[str, list[str]], str | None, bool]:
     now = _now()
     with state.LORA_CACHE_LOCK:
@@ -302,6 +320,19 @@ def _get_loras(refresh: bool = False) -> tuple[dict[str, list[str]], str | None,
             state.LORA_CACHE["high"] = list(fetched.get("high", []))
             state.LORA_CACHE["low"] = list(fetched.get("low", []))
         return fetched, None, False
+
+    # SSH path failed / not configured. Fall back to comfy_gen's disk cache
+    # (populated by the Sync button → `comfy-gen info`). This gives us the
+    # same LoRA list the mobile UI sees. No high/low distinction is
+    # available here, so we return the same flat list for both branches.
+    comfy_loras = _read_comfy_gen_lora_cache()
+    if comfy_loras:
+        fallback = {"high": list(comfy_loras), "low": list(comfy_loras)}
+        with state.LORA_CACHE_LOCK:
+            state.LORA_CACHE["ts"] = now
+            state.LORA_CACHE["high"] = list(comfy_loras)
+            state.LORA_CACHE["low"] = list(comfy_loras)
+        return fallback, None, False
 
     with state.LORA_CACHE_LOCK:
         has_cache = bool(state.LORA_CACHE.get("high") or state.LORA_CACHE.get("low"))

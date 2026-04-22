@@ -468,7 +468,10 @@ function ComfyGenBlock({
   const [refVideo, setRefVideo] = useSessionState<RefVideoInfo[]>(`block_${blockId}_ref_video`, [])
   const [refVideoOverrides, setRefVideoOverrides] = useSessionState<Record<string, string>>(`block_${blockId}_ref_video_overrides`, {})
   const [loraNodes, setLoraNodes] = useSessionState<LoraNodeInfo[]>(`block_${blockId}_lora_nodes`, [])
-  const [loraOverrides, setLoraOverrides] = useSessionState<Record<string, LoraOverride>>(`block_${blockId}_lora_overrides`, {})
+  // Per-node LoRA overrides state is kept (read-only now) because run-time
+  // injection + automation code still looks up `loraOverrides[ln.node_id]?.*`.
+  // The UI that used to mutate this was removed 2026-04-23.
+  const [loraOverrides] = useSessionState<Record<string, LoraOverride>>(`block_${blockId}_lora_overrides`, {})
   const [availableLoras, setAvailableLoras] = useState<string[]>([])
   const [availableSamplers, setAvailableSamplers] = useState<string[]>([])
   const [availableSchedulers, setAvailableSchedulers] = useState<string[]>([])
@@ -2117,89 +2120,12 @@ function ComfyGenBlock({
         </CollapsibleSection>
       )}
 
-      {/* LoRA overrides */}
-      {loraNodes.length > 0 && (
-        <CollapsibleSection
-          label="LoRAs"
-          badge={(() => {
-            const enabledCount = loraNodes.filter((ln) => loraOverrides[ln.node_id]?.enabled !== false).length
-            return enabledCount === loraNodes.length ? `${loraNodes.length}` : `${enabledCount}/${loraNodes.length}`
-          })()}
-        >
-          {loraNodes.map((ln) => {
-            const ov = loraOverrides[ln.node_id]
-            const hasClip = ln.class_type === 'LoraLoader'
-            const isEnabled = ov?.enabled !== false
-            return (
-              <div key={ln.node_id} className="space-y-1.5">
-                {loraNodes.length > 1 && (
-                  <span className="text-[10px] text-muted-foreground">{ln.label}</span>
-                )}
-                <div className="flex items-center gap-2">
-                  <div className={`min-w-0 flex-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
-                    {availableLoras.length > 0 ? (
-                      <AutoSelectMulti
-                        value={ov?.lora_name || ln.lora_name}
-                        onValueChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], lora_name: v } }))}
-                        options={availableLoras}
-                        selectedValues={autoSelect[`${ln.node_id}.lora_name`] || []}
-                        onSelectedChange={(vals) => setAutoSelect((prev) => ({ ...prev, [`${ln.node_id}.lora_name`]: vals }))}
-                        automateEnabled={automateEnabled}
-                        placeholder={ln.lora_name}
-                        triggerClassName="h-7 text-xs"
-                      />
-                    ) : (
-                      <Input
-                        value={ov?.lora_name ?? ln.lora_name}
-                        onChange={(e) => setLoraOverrides((prev) => ({
-                          ...prev,
-                          [ln.node_id]: { ...prev[ln.node_id], lora_name: e.target.value },
-                        }))}
-                        placeholder={ln.lora_name}
-                        className="h-7 text-xs"
-                      />
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setLoraOverrides((prev) => ({
-                      ...prev,
-                      [ln.node_id]: { ...prev[ln.node_id], enabled: !isEnabled },
-                    }))}
-                    className={`relative shrink-0 w-8 h-[18px] rounded-full transition-colors ${
-                      isEnabled ? 'bg-blue-600' : 'bg-muted-foreground/30'
-                    }`}
-                  >
-                    <span className={`absolute top-[2px] left-[2px] w-[14px] h-[14px] rounded-full bg-white transition-transform ${
-                      isEnabled ? 'translate-x-[14px]' : 'translate-x-0'
-                    }`} />
-                  </button>
-                </div>
-                <div className={`space-y-1 ${isEnabled ? '' : 'opacity-50 pointer-events-none'}`}>
-                  <AutoSliderInput
-                    label="Model"
-                    value={ov?.strength_model ?? (ln.strength_model != null ? String(ln.strength_model) : '1')}
-                    onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_model: v } }))}
-                    multiValues={autoNumeric[`${ln.node_id}.strength_model`] || []}
-                    onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_model`]: vals }))}
-                    automateEnabled={automateEnabled}
-                  />
-                  {hasClip && (
-                    <AutoSliderInput
-                      label="CLIP"
-                      value={ov?.strength_clip ?? (ln.strength_clip != null ? String(ln.strength_clip) : '1')}
-                      onChange={(v) => setLoraOverrides((prev) => ({ ...prev, [ln.node_id]: { ...prev[ln.node_id], strength_clip: v } }))}
-                      multiValues={autoNumeric[`${ln.node_id}.strength_clip`] || []}
-                      onMultiChange={(vals) => setAutoNumeric((prev) => ({ ...prev, [`${ln.node_id}.strength_clip`]: vals }))}
-                      automateEnabled={automateEnabled}
-                    />
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </CollapsibleSection>
-      )}
+      {/* Per-node LoRA override UI removed 2026-04-23 — superseded by the
+          inline "LoRAs (inline)" section above, which auto-maps picks onto
+          the detected LoRA loader nodes. The `loraOverrides` state is still
+          kept (unused here) because the automation / run-time injection
+          paths reference it via `loraOverrides[ln.node_id]`. If we ever need
+          per-node advanced control again, restore from commit before this. */}
 
       {/* Text overrides — grouped by node label */}
       {Object.entries(textOverrideGroups).map(([groupLabel, items]) => {
