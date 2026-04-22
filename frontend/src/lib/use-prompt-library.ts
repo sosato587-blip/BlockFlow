@@ -15,8 +15,11 @@ export function usePromptLibrary() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    // `loading` already defaults to true on mount (see useState above), so the
+    // redundant `setLoading(true)` that used to live here was dropped to silence
+    // the react-hooks/set-state-in-effect lint error. Effect only runs once
+    // (`[]` deps), so no risk of the flag getting stuck false between runs.
     let cancelled = false
-    setLoading(true)
     fetch('/api/prompt-library')
       .then((res) => res.json())
       .then((data) => {

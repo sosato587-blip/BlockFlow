@@ -29,16 +29,20 @@ function isLayoutMode(value: unknown): value is BlockLayoutMode {
 }
 
 export function BlockLayoutProvider({ children }: { children: ReactNode }) {
-  const [mode, setMode] = useState<BlockLayoutMode>(DEFAULT_MODE)
-
-  useEffect(() => {
+  // Hydrate from sessionStorage via a lazy initializer instead of a useEffect
+  // setState (which trips react-hooks/set-state-in-effect). The typeof window
+  // guard keeps SSR/build-time rendering happy; on the server we fall back to
+  // DEFAULT_MODE, and the client renders identically on first paint because
+  // sessionStorage is only read client-side anyway.
+  const [mode, setMode] = useState<BlockLayoutMode>(() => {
+    if (typeof window === 'undefined') return DEFAULT_MODE
     try {
       const raw = sessionStorage.getItem(STORAGE_KEY)
-      if (isLayoutMode(raw)) setMode(raw)
+      return isLayoutMode(raw) ? raw : DEFAULT_MODE
     } catch {
-      // ignore storage access failures
+      return DEFAULT_MODE
     }
-  }, [])
+  })
 
   useEffect(() => {
     try {
