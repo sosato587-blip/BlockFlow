@@ -1042,7 +1042,8 @@ def build_ltx_video_workflow(
         },
         "11": {
             "class_type": "CLIPLoader",
-            "inputs": {"clip_name": "t5xxl_fp16.safetensors", "type": "ltxv"},
+            # Using fp8 (already on the volume from Flux); fp16 (~9.8GB) not needed.
+            "inputs": {"clip_name": "t5xxl_fp8_e4m3fn.safetensors", "type": "ltxv"},
         },
         "20": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["11", 0], "text": prompt}},
         "21": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["11", 0], "text": negative}},
@@ -2498,22 +2499,17 @@ async def m_ltx_dl_info() -> JSONResponse:
     """Return DL payload for LTX Video model + text encoder."""
     return JSONResponse({
         "ok": True,
-        "note": "Run these two download jobs on RunPod endpoint before using /api/m/ltx_video",
+        "note": (
+            "LTX 2B checkpoint is required. t5xxl_fp8_e4m3fn is already on the volume "
+            "(shared with Flux) so fp16 is not needed."
+        ),
         "downloads": [
             {
                 "source": "url",
                 "url": "https://huggingface.co/Lightricks/LTX-Video/resolve/main/ltx-video-2b-v0.9.5.safetensors",
                 "dest": "checkpoints",
                 "filename": "ltx-video-2b-v0.9.5.safetensors",
-                "size_mb_approx": 9200,
-            },
-            {
-                "source": "url",
-                "url": "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors",
-                "dest": "text_encoders",
-                "filename": "t5xxl_fp16.safetensors",
-                "size_mb_approx": 9800,
-                "note": "If t5xxl_fp16 already present (Flux/other), skip this",
+                "size_mb_approx": 4800,
             },
         ],
         "example_powershell": (

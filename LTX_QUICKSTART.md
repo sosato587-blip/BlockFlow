@@ -8,12 +8,14 @@
 
 ## 1. Prerequisite: download models on RunPod (one-time)
 
-LTX needs two files on the RunPod network volume:
+LTX needs one file on the RunPod network volume (the text encoder is shared with Flux and already present):
 
-| File | Size | Dest |
-|---|---|---|
-| `ltx-video-2b-v0.9.5.safetensors` | ~4.8 GB | `diffusion_models/` |
-| `t5xxl_fp16.safetensors` | ~9.8 GB | `text_encoders/` |
+| File | Size | Dest | Status |
+|---|---|---|---|
+| `ltx-video-2b-v0.9.5.safetensors` | ~4.8 GB | `checkpoints/` | **required** |
+| `t5xxl_fp8_e4m3fn.safetensors` | ~4.7 GB | `text_encoders/` | already present (shared with Flux) |
+
+> Previous revision of this doc called for `t5xxl_fp16` (~9.8 GB). We switched to the fp8 variant already on the volume — quality difference for LTX is negligible and saves ~10 GB of disk + bandwidth.
 
 Hit `GET /api/m/ltx_dl_info` to get the ready-to-paste PowerShell snippet — it uses the `comfy-gen download` job handler to pull both into the network volume.
 
