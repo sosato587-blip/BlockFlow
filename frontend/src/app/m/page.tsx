@@ -1,5 +1,23 @@
 'use client'
 
+/* ============================================================================
+ * 🔴 DUAL-IMPLEMENTATION WARNING — READ BEFORE EDITING
+ * ----------------------------------------------------------------------------
+ * BlockFlow のフロントエンドは2系統ある：
+ *   - モバイル版: このファイル (frontend/src/app/m/page.tsx)
+ *   - デスクトップ版: custom_blocks/<BLOCK>/frontend.block.tsx (ブロックキャンバス)
+ *
+ * これらは自動同期しない。UX 変更（LoRA 選択 / ベースモデル / プロンプト欄 /
+ * 警告色 / エンドポイント指定 など）を片方だけに入れないこと。
+ *
+ * 編集する前に必ず対応する custom_blocks/ 側を grep して同期変更する。
+ * 逆に custom_blocks/ 側を編集する人は、このファイルの該当箇所を grep
+ * して同期変更すること。
+ *
+ * 過去2回、片方だけ編集して UX が乖離した事案あり (2026-04 ×2)。
+ * 詳細: プロジェクトルート CLAUDE.md「BlockFlow フロントエンド二重実装ルール」
+ * ==========================================================================*/
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Heart, ImageIcon, ListTodo, RefreshCw, Star, X, ExternalLink, Sparkles, Database, Loader2, CheckCircle2, AlertCircle, Repeat, Square, Save, BookOpen, DollarSign, Trash2, User, GitCompareArrows, Layers, Paintbrush, Eraser, Wand2, Maximize2, Users, Film } from 'lucide-react'
@@ -1642,8 +1660,26 @@ function GenerateTab() {
   // Endpoint ID (mirrors PC's Endpoint ID field)
   const [endpointId, setEndpointId] = useState('')
   const [endpointLoaded, setEndpointLoaded] = useState(false)
+  // Split RunPod settings out of Advanced into their own section (was too buried).
+  const [runpodOpen, setRunpodOpen] = useState(true)
   // Advanced controls (matches PC version's KSampler + negative prompt)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  // Base Model family inferred from the `model` dropdown. Used to filter LoRAs
+  // and drive the per-family checkpoint picker.
+  const activeFamily = model === 'illustrious' ? 'illustrious' : model === 'z_image' ? 'z_image' : 'wan_22'
+  const [checkpoint, setCheckpoint] = useState('')
+  // Full LoRA grouping fetched from lora_selector endpoint. Used to filter
+  // loraOptions by activeFamily.
+  const [loraGrouped, setLoraGrouped] = useState<{
+    grouped_high: Record<string, string[]>
+    grouped_low: Record<string, string[]>
+  }>({ grouped_high: {}, grouped_low: {} })
+  // Base-model families + checkpoints for the per-family checkpoint dropdown.
+  const [familyData, setFamilyData] = useState<Array<{
+    id: string; label: string; description: string; ckpt_dir: string;
+    lora_count_high: number; lora_count_low: number;
+    checkpoints: Array<{ filename: string; label: string; notes: string }>
+  }>>([])
   const [steps, setSteps] = useState(8)
   const [cfg, setCfg] = useState(1.0)
   const [samplerName, setSamplerName] = useState('euler')
@@ -1702,19 +1738,39 @@ function GenerateTab() {
   const [loraLoading, setLoraLoading] = useState(false)
   const [loraFetchError, setLoraFetchError] = useState<string | null>(null)
 
-  // Fetch LoRA options: try cache first (fast), fallback to inventory (slow)
+  // Fetch LoRA options + family grouping. Prefers the lora_selector endpoint which
+  // returns `grouped_high` / `grouped_low` keyed by family — used to filter the
+  // mobile LoRA dropdown to only show LoRAs matching the active model family.
   const fetchLoras = useCallback(async () => {
     setLoraLoading(true)
     setLoraFetchError(null)
     try {
-      // Try fast path: comfy_gen cache (populated by Sync button)
+      // Fast path: lora_selector endpoint (includes family grouping)
+      const groupedRes = await fetch('/api/blocks/lora_selector/loras')
+      if (groupedRes.ok) {
+        const d = await groupedRes.json()
+        if (d && (d.grouped_high || d.grouped_low)) {
+          setLoraGrouped({
+            grouped_high: d.grouped_high || {},
+            grouped_low: d.grouped_low || {},
+          })
+          if (Array.isArray(d.high) || Array.isArray(d.low)) {
+            const all = Array.from(new Set([...(d.high || []), ...(d.low || [])])).sort()
+            if (all.length > 0) {
+              setLoraOptions(all)
+              return
+            }
+          }
+        }
+      }
+      // Fallback: comfy_gen cache
       const cacheRes = await fetch('/api/blocks/comfy_gen/cache')
       const cacheData = await cacheRes.json()
       if (cacheData?.ok && Array.isArray(cacheData.loras) && cacheData.loras.length > 0) {
         setLoraOptions([...cacheData.loras].sort())
         return
       }
-      // Fallback: fresh inventory (slow, 30-60s Serverless cold start)
+      // Last-resort fallback: fresh inventory (slow, 30-60s Serverless cold start)
       const res = await fetch('/api/m/inventory')
       const data: InventoryResp = await res.json()
       const loras = (data?.inventory?.loras || []).map((f) => f.filename)
@@ -1731,6 +1787,53 @@ function GenerateTab() {
   }, [])
 
   useEffect(() => { void fetchLoras() }, [fetchLoras])
+
+  // Fetch base-model families on mount (once) for the checkpoint dropdown.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch('/api/blocks/base_model_selector/families')
+        const d = await res.json()
+        if (d?.ok && Array.isArray(d.families)) setFamilyData(d.families)
+      } catch {}
+    })()
+  }, [])
+
+  // Compute family-filtered LoRA list. Falls back to the flat `loraOptions`
+  // when the grouped payload is empty (e.g. inventory-only mode).
+  const filteredLoraOptions = useMemo(() => {
+    const high = loraGrouped.grouped_high[activeFamily] || []
+    const low = loraGrouped.grouped_low[activeFamily] || []
+    const merged = Array.from(new Set([...high, ...low])).sort()
+    if (merged.length > 0) return merged
+    return loraOptions
+  }, [loraGrouped, activeFamily, loraOptions])
+
+  // Persist checkpoint per-family (each family remembers its own pick).
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const stored = localStorage.getItem(`m_checkpoint_${activeFamily}`)
+    setCheckpoint(stored || '')
+  }, [activeFamily])
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (checkpoint) localStorage.setItem(`m_checkpoint_${activeFamily}`, checkpoint)
+  }, [checkpoint, activeFamily])
+
+  // When family changes, drop any selected LoRAs that aren't in the new family's list.
+  useEffect(() => {
+    const allowed = new Set(filteredLoraOptions)
+    setLoras((prev) => prev.map((l) =>
+      l.name === '__none__' || !l.name || allowed.has(l.name)
+        ? l
+        : { ...l, name: '__none__' }
+    ))
+  }, [activeFamily, filteredLoraOptions])
+
+  const currentFamilyCheckpoints = useMemo(
+    () => familyData.find((f) => f.id === activeFamily)?.checkpoints || [],
+    [familyData, activeFamily]
+  )
 
   // Fetch default endpoint_id from backend config (once on mount)
   useEffect(() => {
@@ -1944,6 +2047,9 @@ function GenerateTab() {
           .filter((l) => l.name && l.name !== '__none__')
           .map((l) => ({ name: l.name, strength: l.strength }))
       }
+      // Forward-compat: pass selected checkpoint so the backend can override it
+      // on workflows that respect a `checkpoint` field. Harmless if ignored.
+      if (checkpoint) body.checkpoint = checkpoint
       if (model === 'wan_i2v') {
         body.image_url = imageUrl.trim()
         body.length = length
@@ -2368,6 +2474,57 @@ function GenerateTab() {
         </Select>
       </div>
 
+      {/* Checkpoint picker — mirrors desktop ComfyGen's inline Base Model section.
+          Per-family persistence so switching model remembers the last checkpoint. */}
+      <div className="space-y-1.5">
+        <label className="text-xs font-medium text-muted-foreground">
+          Checkpoint <span className="text-[9px] text-muted-foreground/70">(optional — overrides workflow default)</span>
+        </label>
+        <Select
+          value={checkpoint || '__none__'}
+          onValueChange={(v) => setCheckpoint(v === '__none__' ? '' : v)}
+          disabled={currentFamilyCheckpoints.length === 0}
+        >
+          <SelectTrigger className="w-full h-9 text-xs">
+            <SelectValue placeholder={currentFamilyCheckpoints.length === 0 ? '(no curated checkpoints)' : '(use workflow default)'} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__" className="text-xs">(use workflow default)</SelectItem>
+            {currentFamilyCheckpoints.map((cp) => (
+              <SelectItem key={cp.filename} value={cp.filename} className="text-xs">
+                {cp.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* RunPod settings — pulled out of Advanced (was buried too deep) */}
+      <div className="rounded-lg border border-border/40 bg-card/20">
+        <button
+          onClick={() => setRunpodOpen((v) => !v)}
+          className="w-full flex items-center justify-between p-3 text-xs font-medium hover:bg-card/40 transition-colors"
+        >
+          <span>RunPod settings</span>
+          <span className={`transition-transform ${runpodOpen ? 'rotate-90' : ''}`}>›</span>
+        </button>
+        {runpodOpen && (
+          <div className="border-t border-border/40 p-3 space-y-1">
+            <label className="text-[10px] font-medium text-muted-foreground">RunPod Endpoint ID</label>
+            <Input
+              value={endpointId}
+              onChange={(e) => setEndpointId(e.target.value)}
+              placeholder="(using backend default)"
+              className="h-8 text-xs font-mono"
+            />
+            <p className="text-[9px] text-muted-foreground">
+              Leave blank to use the server&apos;s default endpoint (from .env).
+              Override here if you want to hit a different RunPod endpoint.
+            </p>
+          </div>
+        )}
+      </div>
+
       {/* Image URL input (only for Wan I2V) */}
       {model === 'wan_i2v' && (
         <div className="space-y-1.5">
@@ -2438,7 +2595,7 @@ function GenerateTab() {
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-muted-foreground">
-              LoRAs (optional, {loras.length} added, {loraOptions.length} available)
+              LoRAs (optional, {loras.length} added, {filteredLoraOptions.length} available for {activeFamily})
             </label>
             <div className="flex items-center gap-1">
               <button
@@ -2475,9 +2632,9 @@ function GenerateTab() {
             </div>
           )}
 
-          {!loraLoading && loraOptions.length === 0 && (
+          {!loraLoading && filteredLoraOptions.length === 0 && (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-400">
-              {loraFetchError || 'LoRA list empty.'}
+              {loraFetchError || `No LoRAs for ${activeFamily}.`}
               <br />
               <strong>Tip:</strong> Tap the ComfyUI Gen block&apos;s Sync button on PC once to populate the cache — mobile will then load it instantly.
             </div>
@@ -2511,7 +2668,7 @@ function GenerateTab() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__none__">(none)</SelectItem>
-                    {loraOptions.map((name) => (
+                    {filteredLoraOptions.map((name) => (
                       <SelectItem key={name} value={name} className="text-xs">
                         {name}
                       </SelectItem>
@@ -2763,20 +2920,7 @@ function GenerateTab() {
 
         {advancedOpen && (
           <div className="border-t border-border/40 p-3 space-y-3">
-            {/* Endpoint ID */}
-            <div className="space-y-1">
-              <label className="text-[10px] font-medium text-muted-foreground">RunPod Endpoint ID</label>
-              <Input
-                value={endpointId}
-                onChange={(e) => setEndpointId(e.target.value)}
-                placeholder="(using backend default)"
-                className="h-8 text-xs font-mono"
-              />
-              <p className="text-[9px] text-muted-foreground">
-                Leave blank to use the server&apos;s default endpoint (from .env).
-                Override here if you want to hit a different RunPod endpoint.
-              </p>
-            </div>
+            {/* Endpoint ID moved to its own "RunPod settings" section above. */}
             {/* Steps + CFG */}
             <div className="grid grid-cols-2 gap-2">
               <div className="space-y-1">
