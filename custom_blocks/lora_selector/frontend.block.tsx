@@ -1,5 +1,15 @@
 'use client'
 
+/* ============================================================================
+ * 🔴 DUAL-IMPLEMENTATION WARNING — READ BEFORE EDITING
+ * ----------------------------------------------------------------------------
+ * このファイルはデスクトップ版のブロック実装。モバイル版には **独立した**
+ * LoRA セレクタが `frontend/src/app/m/page.tsx` にある（モノリス、flat list）。
+ * UX ルール（ファミリ別グループ化・Base Model 連動フィルタ等）を変更したら
+ * `frontend/src/app/m/page.tsx` の LoRA 関連セクションも同期更新すること。
+ * 詳細: プロジェクトルート CLAUDE.md「BlockFlow フロントエンド二重実装ルール」
+ * ==========================================================================*/
+
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -345,7 +355,6 @@ export const blockDef: BlockDef = {
   type: 'loraSelector',
   label: 'LoRA Selector',
   description: 'Pick LoRA adapters with strength controls. Wire a Base Model Selector to auto-filter the list.',
-  advanced: true,
   size: 'md',
   canStart: true,
   inputs: [
