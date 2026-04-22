@@ -1835,6 +1835,15 @@ function GenerateTab() {
     [familyData, activeFamily]
   )
 
+  // Friendly label for the active family, matching the desktop Base Model
+  // Selector taxonomy ("Illustrious XL" / "Z-Image Turbo" / "Wan 2.2" / "LTX
+  // Video"). Falls back to the raw id ("illustrious", "wan_22", ...) when the
+  // family API response hasn't arrived yet or the family was pruned backend-side.
+  const activeFamilyLabel = useMemo(
+    () => familyData.find((f) => f.id === activeFamily)?.label || activeFamily,
+    [familyData, activeFamily]
+  )
+
   // Fetch default endpoint_id from backend config (once on mount)
   useEffect(() => {
     void (async () => {
@@ -2595,7 +2604,7 @@ function GenerateTab() {
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <label className="text-xs font-medium text-muted-foreground">
-              LoRAs (optional, {loras.length} added, {filteredLoraOptions.length} available for {activeFamily})
+              LoRAs (optional, {loras.length} added, {filteredLoraOptions.length} available for {activeFamilyLabel})
             </label>
             <div className="flex items-center gap-1">
               <button
@@ -2634,7 +2643,7 @@ function GenerateTab() {
 
           {!loraLoading && filteredLoraOptions.length === 0 && (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-400">
-              {loraFetchError || `No LoRAs for ${activeFamily}.`}
+              {loraFetchError || `No LoRAs for ${activeFamilyLabel}.`}
               <br />
               <strong>Tip:</strong> Tap the ComfyUI Gen block&apos;s Sync button on PC once to populate the cache — mobile will then load it instantly.
             </div>
