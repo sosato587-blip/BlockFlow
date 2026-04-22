@@ -137,7 +137,9 @@ Blocks connect automatically based on compatible data types (text, image, video,
 
 | Block | Description |
 |-------|-------------|
-| **ComfyUI Gen** | Run any ComfyUI workflow on RunPod serverless. Load workflows from JSON or extract from PNG metadata. Supports resolution, seed, prompt, and frame count overrides. Auto-detects KSampler nodes (including modular `SamplerCustomAdvanced` workflows) and shows their display names. Auto-detects LoRA loaders with per-LoRA enable/disable toggle, name swap, and strength sliders. **Automation mode**: sweep multiple values (samplers, schedulers, LoRAs, strengths, CFG, steps, prompts) with cartesian product — runs all combinations in parallel with configurable concurrency (1–10). **Missing model detection**: auto-detects missing models and offers one-click download to the endpoint. |
+| **ComfyUI Gen** | Run any ComfyUI workflow on RunPod serverless. Load workflows from JSON or extract from PNG metadata. Supports resolution, seed, prompt, and frame count overrides. Auto-detects KSampler nodes (including modular `SamplerCustomAdvanced` workflows) and shows their display names. **Inline LoRA picks**: pick High / Low LoRAs directly on the block; a heuristic maps them onto the detected loader nodes (1 loader → all picks; ≥2 with `high`/`low` labels → split by label; 2 unlabeled → by node order; 0 → warning). **Automation mode**: sweep multiple values (samplers, schedulers, LoRAs, strengths, CFG, steps, prompts) with cartesian product — runs all combinations in parallel with configurable concurrency (1–10). **Missing model detection**: auto-detects missing models and offers one-click download to the endpoint. |
+| **Base Model Selector** | Pick the base-model family (Illustrious XL / Z-Image Turbo / Wan 2.2 / LTX Video) and its checkpoint. Feeds downstream blocks so the LoRA Selector shows only compatible LoRAs and ComfyUI Gen swaps in the right checkpoint. Families with zero registered checkpoints are hidden automatically. |
+| **LoRA Selector** | Pick one or more LoRAs filtered by the currently-selected base model family. Backed by two sources: an SSH-mounted model volume (production) and a local `comfy_gen_info_cache.json` fallback (default on the mini-PC setup). High / Low branch picks are exposed so 2-pass video workflows can target each branch separately. |
 
 ### Viewing
 
@@ -178,17 +180,33 @@ Blocks connect automatically based on compatible data types (text, image, video,
 ## Project Structure
 
 ```
-sgs-ui/
+blockflow/
 ├── app.py                  # Single entrypoint — starts backend + frontend
 ├── .env                    # Your API keys (git-ignored)
 ├── frontend/               # Next.js + React + shadcn/ui
+│   └── src/app/m/          # Mobile web UI (separate implementation — see CLAUDE.md)
 ├── backend/                # FastAPI + Topaz clients + RunPod services
+│   └── base_models.py      # Family taxonomy + LoRA classifier
 ├── custom_blocks/          # Self-contained block definitions
 │   ├── <block>/frontend.block.tsx   # Block UI + logic
 │   └── <block>/backend.block.py     # Block API routes (optional)
+├── tests/                  # Python unit tests (stdlib unittest)
 ├── skills/                 # AI agent skills for extending BlockFlow
 ├── flows/                  # Saved pipeline files
 └── output/                 # Downloaded generation outputs
+```
+
+### Testing
+
+```bash
+# Python unit tests (stdlib unittest, no extra deps)
+python -m unittest discover -s tests -v
+
+# Frontend unit tests (vitest)
+cd frontend && npm test
+
+# End-to-end tests (Playwright)
+cd frontend && npm run test:e2e
 ```
 
 Blocks are self-contained modules. Each block lives in `custom_blocks/<name>/` with a frontend component and an optional backend sidecar. Registration is automatic — just add a folder and restart.
@@ -247,7 +265,10 @@ The skill is included in this repo at [`skills/blockflow-block-builder/`](skills
 ## Troubleshooting
 
 **"comfy-gen CLI not found" warning in ComfyUI Gen block**
-Install the CLI: `pip install comfy-gen` and restart the app.
+The CLI is only required for the Sync button (refreshes the cached LoRA / checkpoint list). Everything else on the block — workflow load, prompt override, run, inline LoRA picks — works fine without it. Install with `pip install comfy-gen` and restart the app, or click the × on the warning banner to dismiss it permanently (stored in `localStorage`).
+
+**Base Model Selector dropdown is empty / missing a family**
+Families are auto-hidden when they have zero registered checkpoints. Register a checkpoint by adding a `CheckpointInfo(...)` entry to `KNOWN_CHECKPOINTS` in `backend/base_models.py` and restart.
 
 **Pipeline blocks don't appear after startup**
 Make sure the backend is running (check terminal for `[app] Starting FastAPI on :8000`). The frontend fetches available blocks from the backend.
