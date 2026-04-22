@@ -103,7 +103,7 @@ function ImageViewerBlock({ blockId, inputs, registerExecute }: BlockComponentPr
               onClick={() => { setAccumulatedUrls([]); prevKeyRef.current = ''; setSelectedIndex(0); setCleared(true) }}
               className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
             >
-              Clear
+              Clear all
             </button>
           )}
           <p className="text-[10px] text-muted-foreground">{Math.min(selectedIndex + 1, displayUrls.length)}/{displayUrls.length}</p>

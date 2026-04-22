@@ -57,6 +57,7 @@ interface GenerationPayload {
   seed_mode: 'random' | 'fixed'
   seed: number
   loras?: LoraEntry[]
+  base_model?: { family?: string; ckpt_dir?: string; checkpoint?: string } | undefined
 }
 
 async function submitGeneration(payload: GenerationPayload) {
@@ -268,6 +269,10 @@ function GenerationBlock({
       const runLoras = (freshInputs.loras as LoraEntry[] | undefined)
         ?.filter((l) => l.name && l.name !== '__none__') ?? []
 
+      const baseModel = freshInputs.base_model as
+        | { family?: string; ckpt_dir?: string; checkpoint?: string }
+        | undefined
+
       setExecutionStatus?.('running')
       setStatusMessage('Submitting…')
       pushStatus('Submitting jobs...')
@@ -288,6 +293,7 @@ function GenerationBlock({
             seed_mode: seedMode,
             seed: resolvedSeed,
             loras: runLoras.length > 0 ? runLoras : undefined,
+            base_model: baseModel?.checkpoint ? baseModel : undefined,
           })
 
           if (!res.ok) throw new Error(res.error ?? `Submit failed for prompt ${idx + 1}`)
@@ -422,8 +428,8 @@ function GenerationBlock({
           <Textarea
             value={displayPrompt}
             onChange={(e) => promptBinding?.setLocalValue(e.target.value)}
-            placeholder="Type a prompt..."
-            className="min-h-[80px] resize-y text-xs"
+            placeholder="Type a prompt…"
+            className="min-h-[160px] resize-y text-xs"
           />
         )}
       </div>
@@ -509,6 +515,7 @@ export const blockDef: BlockDef = {
   inputs: [
     { name: 'prompt', kind: PORT_TEXT, required: false },
     { name: 'loras', kind: PORT_LORAS, required: false },
+    { name: 'base_model', kind: 'base_model', required: false },
   ],
   outputs: [
     { name: 'video', kind: PORT_VIDEO },

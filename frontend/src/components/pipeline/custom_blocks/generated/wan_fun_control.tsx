@@ -409,17 +409,17 @@ function WanFunControlBlock({
       {/* Sampling params */}
       <div className="grid grid-cols-3 gap-2">
         <div className="space-y-1">
-          <Label className="text-xs">CFG</Label>
+          <Label className="text-xs">CFG <span className="text-[10px] text-muted-foreground font-normal">(1.0 recommended)</span></Label>
           <Input type="number" min={0.1} step={0.5} value={cfg}
             onChange={(e) => setCfg(Number(e.target.value))} className="h-8 text-xs" />
         </div>
         <div className="space-y-1">
-          <Label className="text-xs">Shift</Label>
+          <Label className="text-xs">Shift <span className="text-[10px] text-muted-foreground font-normal">(8.0 typical)</span></Label>
           <Input type="number" min={1} step={1} value={shift}
             onChange={(e) => setShift(Number(e.target.value))} className="h-8 text-xs" />
         </div>
         <div className="space-y-1">
-          <Label className="text-xs">Steps</Label>
+          <Label className="text-xs">Steps <span className="text-[10px] text-muted-foreground font-normal">(20–40)</span></Label>
           <Input type="number" min={4} step={2} value={steps}
             onChange={(e) => setSteps(Number(e.target.value))} className="h-8 text-xs" />
         </div>

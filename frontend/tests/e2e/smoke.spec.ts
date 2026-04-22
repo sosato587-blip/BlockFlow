@@ -28,15 +28,19 @@ test.describe('BlockFlow smoke', () => {
 })
 
 test.describe('Mock-mode API contracts', () => {
-  test('/api/blocks/base_model_selector/families returns 7 families', async ({ request }) => {
+  test('/api/blocks/base_model_selector/families returns the 4 supported families', async ({ request }) => {
     const res = await request.get('/api/blocks/base_model_selector/families')
     expect(res.ok()).toBeTruthy()
     const body = await res.json()
     expect(body.ok).toBe(true)
     expect(Array.isArray(body.families)).toBe(true)
-    expect(body.families.length).toBeGreaterThanOrEqual(7)
     const ids = body.families.map((f: { id: string }) => f.id)
-    expect(ids).toEqual(expect.arrayContaining(['illustrious', 'sdxl', 'z_image', 'wan_22', 'flux', 'ltx']))
+    // Only families with at least one registered checkpoint OR LoRA are returned.
+    // sdxl / flux / unknown were removed (2026-04-22) — no checkpoints, no hits.
+    expect(ids).toEqual(expect.arrayContaining(['illustrious', 'z_image', 'wan_22', 'ltx']))
+    expect(ids).not.toContain('sdxl')
+    expect(ids).not.toContain('flux')
+    expect(ids).not.toContain('unknown')
   })
 
   test('/api/blocks/lora_selector/loras returns grouped LoRAs', async ({ request }) => {

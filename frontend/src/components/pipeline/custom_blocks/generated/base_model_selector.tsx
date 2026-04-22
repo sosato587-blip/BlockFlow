@@ -65,7 +65,12 @@ function BaseModelSelectorBlock({ blockId, setOutput, registerExecute }: BlockCo
     return () => { cancelled = true }
   }, [])
 
-  const currentFamily = rows.find((r) => r.id === family)
+  // Hide families that have no registered checkpoints. Future-proofs against
+  // adding a family stub before any checkpoint ships — user shouldn't see an
+  // empty-looking option. A family reappears automatically once a checkpoint
+  // is registered in backend/base_models.py.
+  const visibleRows = rows.filter((r) => r.checkpoints.length > 0)
+  const currentFamily = visibleRows.find((r) => r.id === family)
   const currentCheckpoint =
     currentFamily?.checkpoints.find((c) => c.filename === checkpoint)
 
@@ -120,7 +125,7 @@ function BaseModelSelectorBlock({ blockId, setOutput, registerExecute }: BlockCo
             <SelectValue placeholder={loading ? 'Loading…' : 'Select a base model'} />
           </SelectTrigger>
           <SelectContent>
-            {rows.map((row) => {
+            {visibleRows.map((row) => {
               const totalLoras = row.lora_count_high + row.lora_count_low
               return (
                 <SelectItem key={row.id} value={row.id} className="text-xs">
@@ -193,7 +198,7 @@ function BaseModelSelectorBlock({ blockId, setOutput, registerExecute }: BlockCo
 export const blockDef: BlockDef = {
   type: 'baseModelSelector',
   label: 'Base Model Selector',
-  description: 'Pick the AI base model (SDXL / Illustrious / Z-Image / Wan / Flux / LTX). Filters downstream LoRA list.',
+  description: 'Pick the AI base model (Illustrious XL / Z-Image Turbo / Wan 2.2 / LTX Video). Filters downstream LoRA list.',
   size: 'md',
   canStart: true,
   inputs: [],

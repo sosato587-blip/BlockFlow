@@ -358,8 +358,8 @@ function UpscaleBlock({
     if (!resumed) return
 
     setExecutionStatus?.('running')
-    setStatusMessage('Resuming upscale...')
-    pushStatus('Resuming upscale...')
+    setStatusMessage('Resuming upscale\u2026')
+    pushStatus('Resuming upscale\u2026')
 
     resumed.then(({ artifacts, stats }) => {
       setActiveJobs([])
@@ -400,7 +400,7 @@ function UpscaleBlock({
 
       setExecutionStatus?.('running')
       setStatusMessage('Submitting upscale\u2026')
-      pushStatus('Submitting jobs...')
+      pushStatus('Submitting jobs\u2026')
       clearPendingServerlessRun(blockId)
 
       const res = await submitUpscale({
@@ -420,7 +420,7 @@ function UpscaleBlock({
       if (jobIds.length === 0) throw new Error('No upscale job IDs returned')
 
       setStatusMessage('Upscaling\u2026')
-      pushStatus('Polling...')
+      pushStatus('Polling\u2026')
 
       const pending: PendingServerlessRun = {
         kind: 'upscale',

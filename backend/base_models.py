@@ -1,8 +1,7 @@
 """Base-model taxonomy for checkpoints and LoRAs.
 
 A "base model family" is the architecture a checkpoint / LoRA is tied to:
-illustrious (SDXL-anime), sdxl (generic SDXL), z_image (Alibaba S3-DiT),
-wan_22 (14B video), flux, ltx, unknown.
+illustrious (SDXL-anime), z_image (Alibaba S3-DiT), wan_22 (14B video), ltx.
 
 This module exists so the Generate-tab LoRA dropdowns can be filtered by
 the selected base model — preventing the classic "I loaded a Wan LoRA
@@ -13,14 +12,13 @@ Design notes:
 - Each family has a display label + which ComfyUI model-type slot it
   loads into (checkpoints / diffusion_models / etc.) — useful for the
   future Base Model Selector block that will also emit workflow overrides.
-- `UNKNOWN` is a catch-all; new LoRAs fall here until we add a pattern.
-  The frontend should show UNKNOWN LoRAs under a "Other / uncategorized"
-  group so nothing is hidden, just unclassified.
-
-The classifiers are intentionally permissive — a LoRA named with only a
-character name and no architecture hint falls to UNKNOWN rather than
-being guessed. Prefer explicit hints like `_IllustriousXL` / `_z_image`
-/ `_wan22` / `_sdxl` / `_flux` / `_ltx` in LoRA filenames.
+- LoRAs whose filename matches no family pattern are silently dropped
+  from the filtered UI (they can still be selected via the raw dropdown
+  in lora_selector's "all" view). Prefer explicit hints like
+  `_IllustriousXL` / `_z_image` / `_wan22` / `_ltx` in LoRA filenames.
+- `sdxl` / `flux` / `unknown` families were removed (2026-04-22): we only
+  keep families with at least one registered checkpoint. Re-add by
+  inserting a FAMILIES entry + at least one KNOWN_CHECKPOINTS row.
 """
 from __future__ import annotations
 
@@ -47,52 +45,31 @@ class BaseModelFamily:
 FAMILIES: dict[str, BaseModelFamily] = {
     "illustrious": BaseModelFamily(
         id="illustrious",
-        label="Illustrious (anime)",
+        label="Illustrious XL",
         description="Anime-styled SDXL derivative. Best for 2D anime / illustration.",
         ckpt_dir="checkpoints",
         sort_order=10,
     ),
-    "sdxl": BaseModelFamily(
-        id="sdxl",
-        label="SDXL (generic)",
-        description="Generic Stable Diffusion XL. Catch-all for non-Illustrious SDXL.",
-        ckpt_dir="checkpoints",
-        sort_order=20,
-    ),
     "z_image": BaseModelFamily(
         id="z_image",
-        label="Z-Image Turbo (realistic)",
+        label="Z-Image Turbo",
         description="Alibaba S3-DiT realistic model. Use CLIPLoader + qwen_3_4b + type:lumina2.",
         ckpt_dir="diffusion_models",
         sort_order=30,
     ),
     "wan_22": BaseModelFamily(
         id="wan_22",
-        label="Wan 2.2 (video)",
+        label="Wan 2.2",
         description="14B video diffusion (I2V / Fun Control). Uses wan_2.1_vae.",
         ckpt_dir="diffusion_models",
         sort_order=40,
     ),
-    "flux": BaseModelFamily(
-        id="flux",
-        label="Flux",
-        description="Black Forest Labs Flux. Dev or Schnell variants.",
-        ckpt_dir="diffusion_models",
-        sort_order=50,
-    ),
     "ltx": BaseModelFamily(
         id="ltx",
-        label="LTX Video (fast video)",
+        label="LTX Video",
         description="Lightricks LTX 2B video model. ~4-6× cheaper than Wan.",
         ckpt_dir="diffusion_models",
         sort_order=60,
-    ),
-    "unknown": BaseModelFamily(
-        id="unknown",
-        label="Other / uncategorized",
-        description="No family hint in filename. Review and add a pattern if this is real.",
-        ckpt_dir="checkpoints",
-        sort_order=999,
     ),
 }
 
@@ -197,26 +174,26 @@ _LORA_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"z_image|z-image|zimage|turbo(?!_1\.0_fp16)"), "z_image"),
     # Wan 2.2 video hints
     (re.compile(r"wan[_\.]?2\.?2|wan22|wan_i2v|wan_t2v|wan_fun"), "wan_22"),
-    # Flux
-    (re.compile(r"\bflux\b|_flux_"), "flux"),
     # LTX
     (re.compile(r"\bltx\b|ltx[_-]video|ltxv"), "ltx"),
-    # Generic SDXL (only catch if nothing more specific hit)
-    (re.compile(r"sdxl|xl_v\d|_xl\b"), "sdxl"),
 ]
+
+# Sentinel returned when a LoRA filename matches none of the known families.
+# Not a valid FAMILIES key — callers must handle by filtering it out.
+UNCLASSIFIED = "unknown"
 
 
 def classify_lora(filename: str) -> str:
-    """Return the family id for a LoRA filename. 'unknown' if no pattern matches."""
+    """Return the family id for a LoRA filename. UNCLASSIFIED if no pattern matches."""
     if not filename:
-        return "unknown"
+        return UNCLASSIFIED
     base = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
     if base in _LORA_OVERRIDES:
         return _LORA_OVERRIDES[base]
     for pat, family in _LORA_PATTERNS:
         if pat.search(base):
             return family
-    return "unknown"
+    return UNCLASSIFIED
 
 
 # ---------------------------------------------------------------------------
@@ -226,11 +203,15 @@ def classify_lora(filename: str) -> str:
 def group_loras_by_family(loras: Iterable[str]) -> dict[str, list[str]]:
     """Split a flat LoRA list into {family_id: [filename, ...]}.
 
-    Sorts each family's list alphabetically for stable UI order.
+    Sorts each family's list alphabetically for stable UI order. LoRAs whose
+    filename doesn't match any known family pattern are dropped — the frontend
+    only needs per-family lists, and an "Unknown" bucket just adds noise.
     """
     out: dict[str, list[str]] = {fid: [] for fid in FAMILIES.keys()}
     for name in loras:
         fam = classify_lora(name)
+        if fam == UNCLASSIFIED:
+            continue
         out.setdefault(fam, []).append(name)
     for fam in out:
         out[fam].sort()
@@ -250,7 +231,7 @@ def family_summary(grouped_high: dict[str, list[str]],
         high = grouped_high.get(fam.id, [])
         low = grouped_low.get(fam.id, [])
         checkpoints = ck_by_fam.get(fam.id, [])
-        if not high and not low and not checkpoints and fam.id != "unknown":
+        if not high and not low and not checkpoints:
             continue
         rows.append({
             "id": fam.id,
