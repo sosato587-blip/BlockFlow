@@ -1177,18 +1177,24 @@ function ComfyGenBlock({
         }
       }
 
-      // Plan B inline LoRA injection: if the `loras` port is NOT wired externally,
-      // pull inline High/Low picks and inject them into detected LoRA nodes, classified
-      // by the ksampler label (high_noise vs low_noise) encoded in ln.label.
-      // Maps the i-th inline pick of a branch to the i-th LoRA node of the same branch.
+      // Plan B inline LoRA injection — only runs if the external `loras` port
+      // is NOT wired. Maps the inline High / Low picks onto the detected LoRA
+      // loader nodes in the workflow. Heuristic (in priority order):
+      //
+      //   1. If there are >=2 LoRA nodes AND labels contain high/low hints,
+      //      split by label and map i-th pick → i-th node within each branch.
+      //   2. If there are exactly 2 LoRA nodes with no usable label hints,
+      //      fall back to node-order: first node = "high", second = "low".
+      //   3. If there's exactly 1 LoRA node, map BOTH inline high+low picks
+      //      to it (ignore the branch distinction — it's not a 2-pass graph).
+      //   4. If there are 0 LoRA nodes but the user set inline LoRAs, we
+      //      can't inject anything; a UI banner (below the inline section)
+      //      warns the user.
       const externalLoras = freshInputs.loras as Array<{ name: string; branch?: string; strength: number }> | undefined
       if (!externalLoras || !Array.isArray(externalLoras) || externalLoras.length === 0) {
         const activeInlineHigh = inlineHighLoras.filter((l) => l.name && l.name !== '__none__')
         const activeInlineLow = inlineLowLoras.filter((l) => l.name && l.name !== '__none__')
-        if (activeInlineHigh.length > 0 || activeInlineLow.length > 0) {
-          const highNodes = loraNodes.filter((ln) => /high/i.test(ln.label || ''))
-          const lowNodes = loraNodes.filter((ln) => /low/i.test(ln.label || ''))
-          const defaultNodes = highNodes.length === 0 && lowNodes.length === 0 ? loraNodes : []
+        if ((activeInlineHigh.length > 0 || activeInlineLow.length > 0) && loraNodes.length > 0) {
           const applyPicks = (picks: Array<{ name: string; strength: number }>, nodes: typeof loraNodes) => {
             picks.forEach((pick, idx) => {
               const node = nodes[idx]
@@ -1201,8 +1207,28 @@ function ComfyGenBlock({
               if (baseOverrides[scKey] === undefined) baseOverrides[scKey] = String(pick.strength)
             })
           }
-          applyPicks(activeInlineHigh, highNodes.length > 0 ? highNodes : defaultNodes)
-          applyPicks(activeInlineLow, lowNodes)
+
+          if (loraNodes.length === 1) {
+            // Case 3: single loader — merge both branches and feed all picks.
+            applyPicks([...activeInlineHigh, ...activeInlineLow], loraNodes)
+          } else {
+            const highNodes = loraNodes.filter((ln) => /high/i.test(ln.label || ''))
+            const lowNodes = loraNodes.filter((ln) => /low/i.test(ln.label || ''))
+            if (highNodes.length > 0 || lowNodes.length > 0) {
+              // Case 1: labels usable. If one branch matched but the other
+              // didn't, remaining picks still land on any leftover nodes
+              // (ordered).
+              applyPicks(activeInlineHigh, highNodes.length > 0 ? highNodes : loraNodes)
+              applyPicks(activeInlineLow, lowNodes)
+            } else if (loraNodes.length === 2) {
+              // Case 2: two nodes, no label hints — assume [high, low] by order.
+              applyPicks(activeInlineHigh, [loraNodes[0]])
+              applyPicks(activeInlineLow, [loraNodes[1]])
+            } else {
+              // Fallback: no label hints, N>2 loaders — feed all picks sequentially.
+              applyPicks([...activeInlineHigh, ...activeInlineLow], loraNodes)
+            }
+          }
         }
       }
 
@@ -1729,6 +1755,14 @@ function ComfyGenBlock({
               Filtered to {inlineCurrentFamily?.label || inlineFamily}. Applied to detected LoRA nodes
               in the loaded workflow (High→high_noise, Low→low_noise).
             </p>
+            {loraNodes.length === 0 &&
+              (inlineHighLoras.some((l) => l.name && l.name !== '__none__') ||
+                inlineLowLoras.some((l) => l.name && l.name !== '__none__')) && (
+              <p className="text-[10px] text-yellow-500 leading-snug">
+                The loaded workflow has no LoRA loader nodes — inline LoRA picks will be ignored.
+                Add a LoraLoader node to the workflow, or clear the picks below.
+              </p>
+            )}
             {(['high', 'low'] as const).map((branch) => {
               const picks = branch === 'high' ? inlineHighLoras : inlineLowLoras
               const setPicks = branch === 'high' ? setInlineHighLoras : setInlineLowLoras
