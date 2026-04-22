@@ -500,6 +500,75 @@ function ComfyGenBlock({
   // Track which text fields use upstream text (keyed by "nodeId.inputName")
   const [textUpstreamFlags, setTextUpstreamFlags] = useSessionState<Record<string, boolean>>(`block_${blockId}_text_upstream`, {})
 
+  // Inline Base Model + LoRA selection (Plan B: keep a single ComfyGen block as the common case
+  // instead of forcing users to wire Base Model Selector + LoRA Selector as separate blocks).
+  // If external `inputs.base_model` / `inputs.loras` are wired, those win.
+  const [inlineFamily, setInlineFamily] = useSessionState<string>(`block_${blockId}_inline_family`, 'illustrious')
+  const [inlineCheckpoint, setInlineCheckpoint] = useSessionState<string>(`block_${blockId}_inline_checkpoint`, '')
+  const [inlineHighLoras, setInlineHighLoras] = useSessionState<Array<{ name: string; strength: number }>>(
+    `block_${blockId}_inline_high_loras`, []
+  )
+  const [inlineLowLoras, setInlineLowLoras] = useSessionState<Array<{ name: string; strength: number }>>(
+    `block_${blockId}_inline_low_loras`, []
+  )
+  const [inlineFamilyData, setInlineFamilyData] = useState<Array<{
+    id: string; label: string; description: string; ckpt_dir: string;
+    lora_count_high: number; lora_count_low: number;
+    checkpoints: Array<{ filename: string; label: string; notes: string }>
+  }>>([])
+  const [inlineLoraData, setInlineLoraData] = useState<{
+    grouped_high: Record<string, string[]>
+    grouped_low: Record<string, string[]>
+  }>({ grouped_high: {}, grouped_low: {} })
+
+  // Fetch families + LoRA groupings for the inline selectors (once per mount)
+  useEffect(() => {
+    fetch('/api/blocks/base_model_selector/families')
+      .then((r) => r.json())
+      .then((d) => { if (d?.ok && Array.isArray(d.families)) setInlineFamilyData(d.families) })
+      .catch(() => {})
+    fetch('/api/blocks/lora_selector/loras')
+      .then((r) => r.json())
+      .then((d) => {
+        if (d && typeof d === 'object') {
+          setInlineLoraData({
+            grouped_high: d.grouped_high || {},
+            grouped_low: d.grouped_low || {},
+          })
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  const externalBaseModelConnected = Boolean(inputs.base_model && typeof inputs.base_model === 'object')
+  const externalLorasConnected = Boolean(inputs.loras && Array.isArray(inputs.loras) && (inputs.loras as unknown[]).length > 0)
+
+  const inlineCurrentFamily = useMemo(
+    () => inlineFamilyData.find((f) => f.id === inlineFamily),
+    [inlineFamilyData, inlineFamily]
+  )
+
+  // Clear inline checkpoint if it doesn't belong to the selected family.
+  useEffect(() => {
+    if (!inlineCurrentFamily) return
+    if (inlineCheckpoint && !inlineCurrentFamily.checkpoints.some((c) => c.filename === inlineCheckpoint)) {
+      setInlineCheckpoint('')
+    }
+  }, [inlineFamily, inlineCurrentFamily, inlineCheckpoint, setInlineCheckpoint])
+
+  // Synthesize an "effective" base_model from inline state when the port isn't wired.
+  const buildInlineBaseModel = useCallback(() => {
+    const fam = inlineCurrentFamily
+    if (!fam) return null
+    return {
+      family: fam.id,
+      family_label: fam.label,
+      ckpt_dir: fam.ckpt_dir,
+      checkpoint: inlineCheckpoint,
+      checkpoint_label: fam.checkpoints.find((c) => c.filename === inlineCheckpoint)?.label || '',
+    }
+  }, [inlineCurrentFamily, inlineCheckpoint])
+
   const automationAxes = useMemo(() => {
     if (!automateEnabled) return []
     return computeAxesPure({ ksamplers, ksamplerOverrides, loraNodes, loraOverrides, autoNumeric, autoSelect, autoText, textOverrides, textValues, textUpstreamFlags })
@@ -1081,13 +1150,15 @@ function ComfyGenBlock({
 
       const { fileInputs, overrides: baseOverrides, bypassLoras } = buildBaseOverrides(freshInputs)
 
-      // H2: auto-apply base_model checkpoint override from upstream Base Model Selector.
-      // Scans the parsed workflow for CheckpointLoaderSimple/CheckpointLoader/UNETLoader nodes
-      // and injects `${node_id}.ckpt_name` (or `.unet_name`) into the overrides dict.
-      // No-op when the `base_model` input is unwired or checkpoint is blank.
-      const baseModelInput = freshInputs.base_model as
+      // H2: auto-apply base_model checkpoint override. Prefers an upstream Base Model Selector
+      // block (wired into the `base_model` port) but falls back to ComfyGen's own inline Base
+      // Model section (Plan B inline UI). Scans the parsed workflow for CheckpointLoaderSimple /
+      // CheckpointLoader / UNETLoader nodes and injects `${node_id}.ckpt_name` (or `.unet_name`)
+      // into the overrides dict. No-op when nothing is set.
+      const externalBaseModel = freshInputs.base_model as
         | { family?: string; ckpt_dir?: string; checkpoint?: string }
         | undefined
+      const baseModelInput = externalBaseModel || buildInlineBaseModel() || undefined
       if (baseModelInput && typeof baseModelInput.checkpoint === 'string' && baseModelInput.checkpoint) {
         const ckpt = baseModelInput.checkpoint
         for (const [nodeId, nodeRaw] of Object.entries(workflow)) {
@@ -1101,6 +1172,35 @@ function ComfyGenBlock({
             const key = `${nodeId}.unet_name`
             if (baseOverrides[key] === undefined) baseOverrides[key] = ckpt
           }
+        }
+      }
+
+      // Plan B inline LoRA injection: if the `loras` port is NOT wired externally,
+      // pull inline High/Low picks and inject them into detected LoRA nodes, classified
+      // by the ksampler label (high_noise vs low_noise) encoded in ln.label.
+      // Maps the i-th inline pick of a branch to the i-th LoRA node of the same branch.
+      const externalLoras = freshInputs.loras as Array<{ name: string; branch?: string; strength: number }> | undefined
+      if (!externalLoras || !Array.isArray(externalLoras) || externalLoras.length === 0) {
+        const activeInlineHigh = inlineHighLoras.filter((l) => l.name && l.name !== '__none__')
+        const activeInlineLow = inlineLowLoras.filter((l) => l.name && l.name !== '__none__')
+        if (activeInlineHigh.length > 0 || activeInlineLow.length > 0) {
+          const highNodes = loraNodes.filter((ln) => /high/i.test(ln.label || ''))
+          const lowNodes = loraNodes.filter((ln) => /low/i.test(ln.label || ''))
+          const defaultNodes = highNodes.length === 0 && lowNodes.length === 0 ? loraNodes : []
+          const applyPicks = (picks: Array<{ name: string; strength: number }>, nodes: typeof loraNodes) => {
+            picks.forEach((pick, idx) => {
+              const node = nodes[idx]
+              if (!node) return
+              const nameKey = `${node.node_id}.lora_name`
+              const smKey = `${node.node_id}.strength_model`
+              const scKey = `${node.node_id}.strength_clip`
+              if (baseOverrides[nameKey] === undefined) baseOverrides[nameKey] = pick.name
+              if (baseOverrides[smKey] === undefined) baseOverrides[smKey] = String(pick.strength)
+              if (baseOverrides[scKey] === undefined) baseOverrides[scKey] = String(pick.strength)
+            })
+          }
+          applyPicks(activeInlineHigh, highNodes.length > 0 ? highNodes : defaultNodes)
+          applyPicks(activeInlineLow, lowNodes)
         }
       }
 
@@ -1554,6 +1654,152 @@ function ComfyGenBlock({
           className="h-8 text-xs"
         />
       </div>
+
+      {/* Inline Base Model — Plan B: single-block workflow */}
+      <CollapsibleSection
+        label="Base Model"
+        badge={externalBaseModelConnected
+          ? 'external'
+          : (inlineCurrentFamily?.label || inlineFamily)}
+        defaultOpen={!externalBaseModelConnected}
+      >
+        {externalBaseModelConnected ? (
+          <p className="text-[10px] text-muted-foreground">
+            (using external Base Model Selector block)
+          </p>
+        ) : (
+          <div className="space-y-2">
+            <div className="space-y-1">
+              <Label className="text-[10px] text-muted-foreground">Family</Label>
+              <Select value={inlineFamily} onValueChange={setInlineFamily}>
+                <SelectTrigger className="h-7 text-xs">
+                  <SelectValue placeholder="Select a family" />
+                </SelectTrigger>
+                <SelectContent>
+                  {inlineFamilyData.map((f) => (
+                    <SelectItem key={f.id} value={f.id} className="text-xs">
+                      {f.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-[10px] text-muted-foreground">
+                Checkpoint <span className="text-muted-foreground/70">(optional — overrides workflow)</span>
+              </Label>
+              <Select
+                value={inlineCheckpoint || '__none__'}
+                onValueChange={(v) => setInlineCheckpoint(v === '__none__' ? '' : v)}
+                disabled={!inlineCurrentFamily?.checkpoints.length}
+              >
+                <SelectTrigger className="h-7 text-xs">
+                  <SelectValue placeholder="(use workflow default)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__" className="text-xs">(use workflow default)</SelectItem>
+                  {inlineCurrentFamily?.checkpoints.map((cp) => (
+                    <SelectItem key={cp.filename} value={cp.filename} className="text-xs">
+                      {cp.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        )}
+      </CollapsibleSection>
+
+      {/* Inline LoRA Selector */}
+      <CollapsibleSection
+        label="LoRAs (inline)"
+        badge={externalLorasConnected
+          ? 'external'
+          : `${inlineHighLoras.filter((l) => l.name && l.name !== '__none__').length + inlineLowLoras.filter((l) => l.name && l.name !== '__none__').length}`}
+      >
+        {externalLorasConnected ? (
+          <p className="text-[10px] text-muted-foreground">
+            (using external LoRA Selector block)
+          </p>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-[10px] text-muted-foreground leading-snug">
+              Filtered to {inlineCurrentFamily?.label || inlineFamily}. Applied to detected LoRA nodes
+              in the loaded workflow (High→high_noise, Low→low_noise).
+            </p>
+            {(['high', 'low'] as const).map((branch) => {
+              const picks = branch === 'high' ? inlineHighLoras : inlineLowLoras
+              const setPicks = branch === 'high' ? setInlineHighLoras : setInlineLowLoras
+              const options = (branch === 'high' ? inlineLoraData.grouped_high : inlineLoraData.grouped_low)[inlineFamily] || []
+              return (
+                <div key={branch} className="space-y-1.5">
+                  <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
+                    {branch === 'high' ? 'High Noise' : 'Low Noise'}
+                  </Label>
+                  {picks.map((entry, i) => (
+                    <div key={i} className="space-y-1 rounded-md border border-border/50 p-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <Select
+                          value={entry.name || '__none__'}
+                          onValueChange={(v) => {
+                            const next = [...picks]
+                            next[i] = { ...entry, name: v }
+                            setPicks(next)
+                          }}
+                        >
+                          <SelectTrigger className="flex-1 h-7 text-xs">
+                            <SelectValue placeholder="(none)" />
+                          </SelectTrigger>
+                          <SelectContent className="max-h-[280px]">
+                            <SelectItem value="__none__" className="text-xs">(none)</SelectItem>
+                            {options.map((name) => (
+                              <SelectItem key={name} value={name} className="text-xs">{name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setPicks(picks.filter((_, idx) => idx !== i))}
+                          className="shrink-0 h-6 w-6"
+                          aria-label="Remove LoRA"
+                        >
+                          <svg className="w-3 h-3" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" /></svg>
+                        </Button>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Slider
+                          value={[entry.strength]}
+                          onValueChange={([v]) => {
+                            const next = [...picks]
+                            next[i] = { ...entry, strength: v }
+                            setPicks(next)
+                          }}
+                          min={0}
+                          max={2}
+                          step={0.05}
+                          className="flex-1"
+                        />
+                        <span className="text-[10px] text-muted-foreground w-8 text-right tabular-nums shrink-0">
+                          {entry.strength.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPicks([...picks, { name: '__none__', strength: 1.0 }])}
+                    className="text-[11px] h-6"
+                  >
+                    + Add {branch === 'high' ? 'High' : 'Low'} LoRA
+                  </Button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </CollapsibleSection>
 
       {/* Workflow upload */}
       <div className="space-y-1">
@@ -2064,6 +2310,7 @@ export const blockDef: BlockDef = {
     { name: 'video', kind: PORT_VIDEO, required: false },
     { name: 'prompt', kind: PORT_TEXT, required: false },
     { name: 'base_model', kind: 'base_model', required: false },
+    { name: 'loras', kind: 'loras', required: false },
   ],
   outputs: [
     { name: 'image', kind: PORT_IMAGE },
@@ -2079,6 +2326,10 @@ export const blockDef: BlockDef = {
     },
   ],
   configKeys: [
+    'inline_family',
+    'inline_checkpoint',
+    'inline_high_loras',
+    'inline_low_loras',
     'workflow',
     'workflow_name',
     'load_nodes',
