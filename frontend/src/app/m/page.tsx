@@ -42,6 +42,7 @@ import {
   fetchRuns,
   toggleRunFavorite,
 } from '@/lib/api'
+import { InlineLoraPicker, type LoraPick } from '@/components/lora/InlineLoraPicker'
 
 // R2 image type (kept locally to avoid dependency on uncommitted lib changes).
 interface R2Image {
@@ -1081,7 +1082,10 @@ function BatchTab() {
         model: preset.model,
         prompt: preset.prompt,
         negative: preset.negative,
-        loras: preset.loras,
+        // Presets store a flat list; route it onto the High branch so the
+        // backend doesn't trip the legacy-loras deprecation warning.
+        high_loras: preset.loras || [],
+        low_loras: [],
         width: preset.width, height: preset.height,
         steps: preset.steps, cfg: preset.cfg,
         sampler_name: preset.sampler_name,
@@ -1651,7 +1655,8 @@ function GenerateTab() {
   const [job, setJob] = useState<GenJob | null>(null)
   const [polling, setPolling] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [loras, setLoras] = useState<Array<{ id: string; name: string; strength: number }>>([])
+  const [highLoras, setHighLoras] = useState<LoraPick[]>([])
+  const [lowLoras, setLowLoras] = useState<LoraPick[]>([])
   const [loraOptions, setLoraOptions] = useState<string[]>([])
   // Wan I2V specific
   const [imageUrl, setImageUrl] = useState('')
@@ -1823,11 +1828,13 @@ function GenerateTab() {
   // When family changes, drop any selected LoRAs that aren't in the new family's list.
   useEffect(() => {
     const allowed = new Set(filteredLoraOptions)
-    setLoras((prev) => prev.map((l) =>
+    const sweep = (prev: LoraPick[]): LoraPick[] => prev.map((l) =>
       l.name === '__none__' || !l.name || allowed.has(l.name)
         ? l
         : { ...l, name: '__none__' }
-    ))
+    )
+    setHighLoras(sweep)
+    setLowLoras(sweep)
   }, [activeFamily, filteredLoraOptions])
 
   const currentFamilyCheckpoints = useMemo(
@@ -2051,10 +2058,11 @@ function GenerateTab() {
       if (seedMode === 'fixed') {
         body.seed = seedValue
       }
-      if (loras.length > 0 && model !== 'wan_i2v') {
-        body.loras = loras
-          .filter((l) => l.name && l.name !== '__none__')
-          .map((l) => ({ name: l.name, strength: l.strength }))
+      if (model !== 'wan_i2v') {
+        const cleanPick = (l: LoraPick) => ({ name: l.name, strength: l.strength })
+        const isActive = (l: LoraPick) => Boolean(l.name) && l.name !== '__none__'
+        body.high_loras = highLoras.filter(isActive).map(cleanPick)
+        body.low_loras = lowLoras.filter(isActive).map(cleanPick)
       }
       // Forward-compat: pass selected checkpoint so the backend can override it
       // on workflows that respect a `checkpoint` field. Harmless if ignored.
@@ -2137,13 +2145,16 @@ function GenerateTab() {
     setScheduler(p.scheduler)
     setSeedMode(p.seed_mode)
     if (p.seed_value != null) setSeedValue(p.seed_value)
-    setLoras(
+    // Presets keep the legacy flat ``loras`` schema; restore them into the
+    // High branch (matches m_routes.py's legacy fallback semantics).
+    setHighLoras(
       (p.loras || []).map((l) => ({
         id: crypto.randomUUID?.() || String(Date.now() + Math.random()),
         name: l.name,
         strength: l.strength,
       }))
     )
+    setLowLoras([])
     setSelectedPresetId(p.id || '')
   }
 
@@ -2165,7 +2176,9 @@ function GenerateTab() {
       model,
       prompt,
       negative: negativePrompt,
-      loras: loras
+      // Persist as flat list (preset schema unchanged); High → Low order on
+      // save mirrors single-pass models' on-the-wire merge.
+      loras: [...highLoras, ...lowLoras]
         .filter((l) => l.name && l.name !== '__none__')
         .map((l) => ({ name: l.name, strength: l.strength })),
       width, height, steps, cfg,
@@ -2222,11 +2235,10 @@ function GenerateTab() {
       if (endpointId.trim()) {
         base.endpoint_id = endpointId.trim()
       }
-      if (loras.length > 0) {
-        base.loras = loras
-          .filter((l) => l.name && l.name !== '__none__')
-          .map((l) => ({ name: l.name, strength: l.strength }))
-      }
+      const cleanPick = (l: LoraPick) => ({ name: l.name, strength: l.strength })
+      const isActive = (l: LoraPick) => Boolean(l.name) && l.name !== '__none__'
+      base.high_loras = highLoras.filter(isActive).map(cleanPick)
+      base.low_loras = lowLoras.filter(isActive).map(cleanPick)
       const variations = Array.from({ length: count }, () => ({}))  // empty = each gets random seed
       const res = await fetch('/api/m/batch', {
         method: 'POST',
@@ -2287,11 +2299,10 @@ function GenerateTab() {
         steps: 20,
       }
       if (endpointId.trim()) body.endpoint_id = endpointId.trim()
-      if (loras.length > 0) {
-        body.loras = loras
-          .filter((l) => l.name && l.name !== '__none__')
-          .map((l) => ({ name: l.name, strength: l.strength }))
-      }
+      const cleanPick = (l: LoraPick) => ({ name: l.name, strength: l.strength })
+      const isActive = (l: LoraPick) => Boolean(l.name) && l.name !== '__none__'
+      body.high_loras = highLoras.filter(isActive).map(cleanPick)
+      body.low_loras = lowLoras.filter(isActive).map(cleanPick)
       const res = await fetch('/api/m/adetailer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2599,123 +2610,36 @@ function GenerateTab() {
         />
       </div>
 
-      {/* LoRA selector — multi-LoRA (image gen only; Wan I2V skips for now) */}
+      {/* LoRA selector — High / Low split picker (image gen only; Wan I2V skips for now) */}
       {model !== 'wan_i2v' && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-muted-foreground">
-              LoRAs (optional, {loras.length} added, {filteredLoraOptions.length} available for {activeFamilyLabel})
-            </label>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => void fetchLoras()}
-                disabled={loraLoading}
-                className="text-[10px] px-1.5 py-1 rounded-md border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40"
-                title="Refresh LoRA list"
-              >
-                <RefreshCw className={`w-3 h-3 ${loraLoading ? 'animate-spin' : ''}`} />
-              </button>
-              <button
-                onClick={() =>
-                  setLoras((prev) => [
-                    ...prev,
-                    {
-                      id: crypto.randomUUID?.() || String(Date.now() + Math.random()),
-                      name: '__none__',
-                      strength: 0.8,
-                    },
-                  ])
-                }
-                disabled={loras.length >= 8}
-                className="text-[10px] px-2 py-1 rounded-md border border-orange-500/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 transition-colors disabled:opacity-40"
-              >
-                + Add LoRA
-              </button>
-            </div>
-          </div>
-
-          {loraLoading && (
-            <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 p-2 text-[10px] text-cyan-300 flex items-center gap-1.5">
-              <Loader2 className="w-3 h-3 animate-spin" />
-              Loading LoRA list... (may take 30-60s on cold start)
-            </div>
-          )}
-
-          {!loraLoading && filteredLoraOptions.length === 0 && (
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-400">
-              {loraFetchError || `No LoRAs for ${activeFamilyLabel}.`}
-              <br />
-              <strong>Tip:</strong> Tap the ComfyUI Gen block&apos;s Sync button on PC once to populate the cache — mobile will then load it instantly.
-            </div>
-          )}
-
-          {loras.length === 0 && (
-            <p className="text-[10px] text-muted-foreground italic">
-              No LoRAs selected. Tap &quot;+ Add LoRA&quot; to stack quality boosters, characters, or concepts.
-            </p>
-          )}
-
-          {loras.map((lora, idx) => (
-            <div
-              key={lora.id}
-              className="space-y-1.5 rounded-md border border-border/40 bg-card/30 p-2"
+        <InlineLoraPicker
+          family={activeFamily}
+          familyLabel={activeFamilyLabel}
+          groupedOptions={loraGrouped}
+          highPicks={highLoras}
+          lowPicks={lowLoras}
+          onHighPicksChange={setHighLoras}
+          onLowPicksChange={setLowLoras}
+          accent="orange"
+          isLoading={loraLoading}
+          loadingMessage="Loading LoRA list... (may take 30-60s on cold start)"
+          errorMessage={
+            !loraLoading && filteredLoraOptions.length === 0
+              ? (loraFetchError || `No LoRAs for ${activeFamilyLabel}. Tip: tap Sync on PC's ComfyUI Gen block to populate the cache.`)
+              : undefined
+          }
+          emptyHint='Tap "+ Add High/Low LoRA" to stack quality boosters, characters, or concepts.'
+          headerRightSlot={
+            <button
+              onClick={() => void fetchLoras()}
+              disabled={loraLoading}
+              className="text-[10px] px-1.5 py-1 rounded-md border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40"
+              title="Refresh LoRA list"
             >
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-mono text-muted-foreground w-5 shrink-0">
-                  {idx + 1}.
-                </span>
-                <Select
-                  value={lora.name}
-                  onValueChange={(v) =>
-                    setLoras((prev) =>
-                      prev.map((l) => (l.id === lora.id ? { ...l, name: v } : l))
-                    )
-                  }
-                >
-                  <SelectTrigger className="flex-1 min-w-0 h-8 text-xs">
-                    <SelectValue placeholder="(select LoRA)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">(none)</SelectItem>
-                    {filteredLoraOptions.map((name) => (
-                      <SelectItem key={name} value={name} className="text-xs">
-                        {name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <button
-                  onClick={() =>
-                    setLoras((prev) => prev.filter((l) => l.id !== lora.id))
-                  }
-                  className="shrink-0 h-7 w-7 rounded-md flex items-center justify-center hover:bg-red-500/20 text-muted-foreground hover:text-red-400 transition-colors"
-                  aria-label="Remove LoRA"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              {lora.name !== '__none__' && (
-                <div className="flex items-center gap-2">
-                  <Slider
-                    value={[lora.strength]}
-                    onValueChange={([v]) =>
-                      setLoras((prev) =>
-                        prev.map((l) => (l.id === lora.id ? { ...l, strength: v } : l))
-                      )
-                    }
-                    min={0}
-                    max={2}
-                    step={0.05}
-                    className="flex-1"
-                  />
-                  <span className="text-[10px] font-mono text-muted-foreground w-10 text-right">
-                    {lora.strength.toFixed(2)}
-                  </span>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+              <RefreshCw className={`w-3 h-3 ${loraLoading ? 'animate-spin' : ''}`} />
+            </button>
+          }
+        />
       )}
 
       {/* Dimensions */}
