@@ -48,6 +48,7 @@ import {
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockById, findBlockInTree } from '@/lib/pipeline/tree-utils'
 import { InlineLoraPicker, type LoraPick } from '@/components/lora/InlineLoraPicker'
+import { computeInlineLoraOverrides } from '@/lib/lora-mapping'
 
 const ENDPOINT_KEY = 'comfygen_endpoint_id'
 const RUN_ENDPOINT = '/api/blocks/comfy_gen/run'
@@ -1201,58 +1202,20 @@ function ComfyGenBlock({
       }
 
       // Plan B inline LoRA injection — only runs if the external `loras` port
-      // is NOT wired. Maps the inline High / Low picks onto the detected LoRA
-      // loader nodes in the workflow. Heuristic (in priority order):
-      //
-      //   1. If there are >=2 LoRA nodes AND labels contain high/low hints,
-      //      split by label and map i-th pick → i-th node within each branch.
-      //   2. If there are exactly 2 LoRA nodes with no usable label hints,
-      //      fall back to node-order: first node = "high", second = "low".
-      //   3. If there's exactly 1 LoRA node, map BOTH inline high+low picks
-      //      to it (ignore the branch distinction — it's not a 2-pass graph).
-      //   4. If there are 0 LoRA nodes but the user set inline LoRAs, we
-      //      can't inject anything; a UI banner (below the inline section)
-      //      warns the user.
+      // is NOT wired. The 5-case heuristic (single loader / labeled hints /
+      // 2-node order fallback / N>2 sequential / empty) lives in
+      // `frontend/src/lib/lora-mapping.ts` and is unit-tested there.
       const externalLoras = freshInputs.loras as Array<{ name: string; branch?: string; strength: number }> | undefined
       if (!externalLoras || !Array.isArray(externalLoras) || externalLoras.length === 0) {
         const activeInlineHigh = inlineHighLoras.filter((l) => l.name && l.name !== '__none__')
         const activeInlineLow = inlineLowLoras.filter((l) => l.name && l.name !== '__none__')
-        if ((activeInlineHigh.length > 0 || activeInlineLow.length > 0) && loraNodes.length > 0) {
-          const applyPicks = (picks: Array<{ name: string; strength: number }>, nodes: typeof loraNodes) => {
-            picks.forEach((pick, idx) => {
-              const node = nodes[idx]
-              if (!node) return
-              const nameKey = `${node.node_id}.lora_name`
-              const smKey = `${node.node_id}.strength_model`
-              const scKey = `${node.node_id}.strength_clip`
-              if (baseOverrides[nameKey] === undefined) baseOverrides[nameKey] = pick.name
-              if (baseOverrides[smKey] === undefined) baseOverrides[smKey] = String(pick.strength)
-              if (baseOverrides[scKey] === undefined) baseOverrides[scKey] = String(pick.strength)
-            })
-          }
-
-          if (loraNodes.length === 1) {
-            // Case 3: single loader — merge both branches and feed all picks.
-            applyPicks([...activeInlineHigh, ...activeInlineLow], loraNodes)
-          } else {
-            const highNodes = loraNodes.filter((ln) => /high/i.test(ln.label || ''))
-            const lowNodes = loraNodes.filter((ln) => /low/i.test(ln.label || ''))
-            if (highNodes.length > 0 || lowNodes.length > 0) {
-              // Case 1: labels usable. If one branch matched but the other
-              // didn't, remaining picks still land on any leftover nodes
-              // (ordered).
-              applyPicks(activeInlineHigh, highNodes.length > 0 ? highNodes : loraNodes)
-              applyPicks(activeInlineLow, lowNodes)
-            } else if (loraNodes.length === 2) {
-              // Case 2: two nodes, no label hints — assume [high, low] by order.
-              applyPicks(activeInlineHigh, [loraNodes[0]])
-              applyPicks(activeInlineLow, [loraNodes[1]])
-            } else {
-              // Fallback: no label hints, N>2 loaders — feed all picks sequentially.
-              applyPicks([...activeInlineHigh, ...activeInlineLow], loraNodes)
-            }
-          }
-        }
+        const inlineOverrides = computeInlineLoraOverrides({
+          loraNodes,
+          inlineHigh: activeInlineHigh,
+          inlineLow: activeInlineLow,
+          existingOverrides: baseOverrides,
+        })
+        Object.assign(baseOverrides, inlineOverrides)
       }
 
       // --- BATCH PATH ---
