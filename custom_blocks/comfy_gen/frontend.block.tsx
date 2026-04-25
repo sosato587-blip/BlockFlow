@@ -47,6 +47,7 @@ import {
 } from '@/lib/comfygen-overrides'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockById, findBlockInTree } from '@/lib/pipeline/tree-utils'
+import { InlineLoraPicker, type LoraPick } from '@/components/lora/InlineLoraPicker'
 
 const ENDPOINT_KEY = 'comfygen_endpoint_id'
 const RUN_ENDPOINT = '/api/blocks/comfy_gen/run'
@@ -524,10 +525,10 @@ function ComfyGenBlock({
   // If external `inputs.base_model` / `inputs.loras` are wired, those win.
   const [inlineFamily, setInlineFamily] = useSessionState<string>(`block_${blockId}_inline_family`, 'illustrious')
   const [inlineCheckpoint, setInlineCheckpoint] = useSessionState<string>(`block_${blockId}_inline_checkpoint`, '')
-  const [inlineHighLoras, setInlineHighLoras] = useSessionState<Array<{ name: string; strength: number }>>(
+  const [inlineHighLoras, setInlineHighLoras] = useSessionState<LoraPick[]>(
     `block_${blockId}_inline_high_loras`, []
   )
-  const [inlineLowLoras, setInlineLowLoras] = useSessionState<Array<{ name: string; strength: number }>>(
+  const [inlineLowLoras, setInlineLowLoras] = useSessionState<LoraPick[]>(
     `block_${blockId}_inline_low_loras`, []
   )
   const [inlineFamilyData, setInlineFamilyData] = useState<Array<{
@@ -1797,76 +1798,16 @@ function ComfyGenBlock({
                 Add a LoraLoader node to the workflow, or clear the picks below.
               </p>
             )}
-            {(['high', 'low'] as const).map((branch) => {
-              const picks = branch === 'high' ? inlineHighLoras : inlineLowLoras
-              const setPicks = branch === 'high' ? setInlineHighLoras : setInlineLowLoras
-              const options = (branch === 'high' ? inlineLoraData.grouped_high : inlineLoraData.grouped_low)[inlineFamily] || []
-              return (
-                <div key={branch} className="space-y-1.5">
-                  <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                    {branch === 'high' ? 'High Noise' : 'Low Noise'}
-                  </Label>
-                  {picks.map((entry, i) => (
-                    <div key={i} className="space-y-1 rounded-md border border-border/50 p-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <Select
-                          value={entry.name || '__none__'}
-                          onValueChange={(v) => {
-                            const next = [...picks]
-                            next[i] = { ...entry, name: v }
-                            setPicks(next)
-                          }}
-                        >
-                          <SelectTrigger className="flex-1 h-7 text-xs">
-                            <SelectValue placeholder="(none)" />
-                          </SelectTrigger>
-                          <SelectContent className="max-h-[280px]">
-                            <SelectItem value="__none__" className="text-xs">(none)</SelectItem>
-                            {options.map((name) => (
-                              <SelectItem key={name} value={name} className="text-xs">{name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => setPicks(picks.filter((_, idx) => idx !== i))}
-                          className="shrink-0 h-6 w-6"
-                          aria-label="Remove LoRA"
-                        >
-                          <svg className="w-3 h-3" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" /></svg>
-                        </Button>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Slider
-                          value={[entry.strength]}
-                          onValueChange={([v]) => {
-                            const next = [...picks]
-                            next[i] = { ...entry, strength: v }
-                            setPicks(next)
-                          }}
-                          min={0}
-                          max={2}
-                          step={0.05}
-                          className="flex-1"
-                        />
-                        <span className="text-[10px] text-muted-foreground w-8 text-right tabular-nums shrink-0">
-                          {entry.strength.toFixed(2)}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPicks([...picks, { name: '__none__', strength: 1.0 }])}
-                    className="text-[11px] h-6"
-                  >
-                    + Add {branch === 'high' ? 'High' : 'Low'} LoRA
-                  </Button>
-                </div>
-              )
-            })}
+            <InlineLoraPicker
+              family={inlineFamily}
+              familyLabel={inlineCurrentFamily?.label}
+              groupedOptions={inlineLoraData}
+              highPicks={inlineHighLoras}
+              lowPicks={inlineLowLoras}
+              onHighPicksChange={setInlineHighLoras}
+              onLowPicksChange={setInlineLowLoras}
+              compact
+            />
           </div>
         )}
       </CollapsibleSection>
