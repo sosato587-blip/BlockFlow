@@ -1,12 +1,12 @@
 # A4 引き継ぎドキュメント — Mobile Inline LoRA UI
 
-> **これを読んでいる Claude へ:** あなたは `sosato587-blip/BlockFlow` リポの web セッションです。前のセッション（`sosato587-blip/test` リポにスコープされていた Web Claude）で A4 の設計と一部実装が完了しました。このドキュメントを読めば、Task 2 以降の実装を続行できます。
+> **2026-04-25: A4 完了**。本ドキュメントは履歴目的で残す。後続作業は `HANDOFF_FOR_WEB_CLAUDE.md` の S2-Full（§ 8）を参照。
 
 ## 1. クイックオリエンテーション
 
 - **タスク**: A4 — Mobile (`/m`) の Inline LoRA UI 実装
-- **現状**: 設計確定済、Task 1（共有コンポ）と Task 9（Python ヘルパ）は実装＋テスト済
-- **次にやること**: Task 2（desktop の差し替え）から開始
+- **現状**: ✅ **完了**（全 12 タスク、関連 commit `2c15374` → `…` 上 7 コミット）
+- **次にやること**: なし。S2-Full（長期構想）に移行
 - **設計意思決定者**: ユーザ本人。重要判断は逐次確認すること
 
 ## 2. 設計合意の要旨（前セッションの結論）
@@ -33,20 +33,20 @@
 
 | # | ファイル | 変更内容 | 受入基準 (AC) | 状態 |
 |---|---|---|---|---|
-| 1 | `frontend/src/components/lora/InlineLoraPicker.tsx`（新規） | 共有コンポ実装 | High/Low セクション描画、ピック編集、strength slider、disabled バナー | ✅ **完了**（要転写） |
-| 2 | `custom_blocks/comfy_gen/frontend.block.tsx` | inline JSX を `<InlineLoraPicker>` に置換（`<CollapsibleSection>` 維持） | Desktop UI が視覚的に同一、セッション永続化が壊れない | ⏳ 未着手 |
-| 3 | `custom_blocks/comfy_gen/frontend.block.tsx` | `registerExecute` 内 5-case 複製を `computeInlineLoraOverrides` 呼び出しに置換 | overrides map が従来と完全一致 | ⏳ 未着手 |
-| 4 | `frontend/src/app/m/page.tsx` | `loras` state を `highLoras` / `lowLoras` に分割 | state モデルが desktop と同型 | ⏳ 未着手 |
-| 5 | `frontend/src/app/m/page.tsx` | GenerateTab に `<InlineLoraPicker>` をマウント | High/Low 分離で描画、既存スタイル維持 | ⏳ 未着手 |
-| 6 | `frontend/src/app/m/page.tsx` | `submitInternal` の payload を `body.high_loras` / `body.low_loras` に | Network タブで新 shape を確認 | ⏳ 未着手 |
-| 7 | `backend/m_routes.py` | `build_z_image_workflow` / `build_illustrious_workflow` が `high_loras`/`low_loras` を受理、merge して chain | z_image/illustrious の既存ジョブ出力が完全一致 | ⏳ 未着手 |
-| 8 | `backend/m_routes.py` | `build_wan_i2v_workflow()` に dual-pass LoRA 注入を新規追加 | wan_i2v で high/low LoRA 指定時に正しい dual-pass 出力 | ⏳ 未着手 |
-| 9 | `backend/lora_mapping.py`（新規） | `computeInlineLoraOverrides` Python 移植 | 単体テスト 10/10 pass | ✅ **完了**（要転写） |
-| 10 | `frontend/src/app/m/page.tsx` | `model !== 'wan_i2v'` gate を削除 | wan_i2v で LoRA UI 表示・送信成功 | ⏳ 未着手 |
-| 11 | テスト | コンポ snapshot + `m_routes.py` 統合テスト + wan_i2v smoke | CI 緑 | 部分完了 |
-| 12 | `HANDOFF_FOR_WEB_CLAUDE.md` | A4 完了マーク、S2-Full 新設 | ドキュメント更新済み | ⏳ 未着手 |
+| 1 | `frontend/src/components/lora/InlineLoraPicker.tsx`（新規） | 共有コンポ実装 | High/Low セクション描画、ピック編集、strength slider、disabled バナー | ✅ 完了 |
+| 2 | `custom_blocks/comfy_gen/frontend.block.tsx` | inline JSX を `<InlineLoraPicker>` に置換（`<CollapsibleSection>` 維持） | Desktop UI が視覚的に同一、セッション永続化が壊れない | ✅ 完了 |
+| 3 | `custom_blocks/comfy_gen/frontend.block.tsx` | `registerExecute` 内 5-case 複製を `computeInlineLoraOverrides` 呼び出しに置換 | overrides map が従来と完全一致 | ✅ 完了 |
+| 4 | `frontend/src/app/m/page.tsx` | `loras` state を `highLoras` / `lowLoras` に分割 | state モデルが desktop と同型 | ✅ 完了 |
+| 5 | `frontend/src/app/m/page.tsx` | GenerateTab に `<InlineLoraPicker>` をマウント | High/Low 分離で描画、既存スタイル維持 | ✅ 完了 |
+| 6 | `frontend/src/app/m/page.tsx` | `submitInternal` の payload を `body.high_loras` / `body.low_loras` に | Network タブで新 shape を確認 | ✅ 完了 |
+| 7 | `backend/m_routes.py` | `build_z_image_workflow` / `build_illustrious_workflow` が `high_loras`/`low_loras` を受理、merge して chain | z_image/illustrious の既存ジョブ出力が完全一致 | ✅ 完了 |
+| 8 | `backend/m_routes.py` | `build_wan_i2v_workflow()` に dual-pass LoRA 注入を新規追加 | wan_i2v で high/low LoRA 指定時に正しい dual-pass 出力 | ✅ 完了 |
+| 9 | `backend/lora_mapping.py`（新規） | `computeInlineLoraOverrides` Python 移植 | 単体テスト 10/10 pass | ✅ 完了 |
+| 10 | `frontend/src/app/m/page.tsx` | `model !== 'wan_i2v'` gate を削除 | wan_i2v で LoRA UI 表示・送信成功 | ✅ 完了 |
+| 11 | テスト | コンポ snapshot + `m_routes.py` 統合テスト + wan_i2v smoke | CI 緑（pytest 27/27、vitest 13/13） | ✅ 完了（コンポ snapshot は依存パッケージ未導入で skip） |
+| 12 | `HANDOFF_FOR_WEB_CLAUDE.md` | A4 完了マーク、S2-Full 新設 | ドキュメント更新済み | ✅ 完了 |
 
-**残工数: 約 5〜6 人日**（Task 1, 9 完了済みの分を引いた残り）
+**結果**: 全 12 タスク完了。ブランチ `claude/continue-a4-task-2-sjRcI`。
 
 ## 4. 完成済みファイル（要転写）
 

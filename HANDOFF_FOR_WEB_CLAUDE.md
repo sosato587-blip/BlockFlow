@@ -54,10 +54,19 @@
 
 ## 4. 残タスク（優先度順）
 
+### ✅ 完了（A4 — 2026-04-25）
+- **A4**: モバイル版 (`/m`) への inline LoRA UI 実装 — **完了**
+  - 共有コンポ `frontend/src/components/lora/InlineLoraPicker.tsx` をデスクトップとモバイル両方で使用
+  - Mobile 送信 payload を `high_loras` / `low_loras` に分割（旧 `loras` は backend で legacy fallback として受理、deprecation log 付き）
+  - `backend/lora_mapping.py` に Python 移植 + 10 ケース pytest
+  - `backend/m_routes.py` の `build_z_image_workflow` / `build_illustrious_workflow` を `high_loras` / `low_loras` 対応にして single-pass merge、`build_wan_i2v_workflow` には dual-pass LoRA 注入を新規追加
+  - 統合テスト 17 ケース追加（`backend/tests/test_m_routes_loras.py`）
+  - 詳細は `docs/handoffs/A4_HANDOFF.md` 参照
+
 ### 🟠 高優先度
-- **A4**: モバイル版 (`/m`) への inline LoRA UI 実装 or 明示的「非対応」表記
 - **B3**: LoRA loader=0 の警告に具体的アクション提案（workflow に `LoraLoaderModelOnly` 追加方法）
 - **A7**: `m/page.tsx` 3600行モノリス分割（`m/sections/base-model.tsx` 等）
+- **S2-Full**: Desktop/Mobile アーキテクチャ完全統一（A4 完了後の長期構想、§ 8 参照）
 
 ### 🟡 中優先度
 - **C3**: `backend/services.py` 分割（`services/lora.py`, `services/runs.py`, `services/runpod.py`）
@@ -130,6 +139,26 @@ blockflow/
 - 「この関数直して」→ デスクトップ側で Claude Code にやらせる
 - 「コミットして push して」→ デスクトップ側 or ミニPC 側
 - 「RunPod 叩いて画像生成して」→ デスクトップ側（API キー所在）
+
+## 8. S2-Full: Desktop/Mobile アーキテクチャ完全統一
+
+**ステータス:** 📝 計画中、長期（3 ヶ月以上）
+
+**目標:** `/api/m/*` と mobile 専用 workflow builder を退役。すべての mobile 操作を desktop のブロック API 経由で実行する。
+
+**サブタスク:**
+- Inpaint / Outpaint / ControlNet / CharaIP / ADetailer / CharacterSheet / LTXVideo の desktop ブロックを新設
+- `m_routes.py` の Python workflow builder をブロックごとの `backend.block.py` に移管
+- Mobile 送信を `/api/m/*` から `/api/blocks/*/run` に切替
+- 命令型 Python builder を宣言型 JSON テンプレに置換
+- `m_routes.py` 本体を退役（`m_store.py` はプリセット・コスト・Publications・Schedules 用に残す）
+
+**A4 で済ませた前進:**
+- 共有コンポ `<InlineLoraPicker>` を desktop / mobile 両方で利用（UI レイヤは統一済み）
+- payload 形状 (`high_loras` / `low_loras`) を desktop の split UI と揃えた
+- `backend/lora_mapping.py` の Python 実装で 5-case heuristic を共通化
+
+**発動条件:** 同期事故が再発したら見直す。
 
 ---
 
