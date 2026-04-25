@@ -36,6 +36,37 @@ NEGATIVE_DEFAULT = (
 )
 
 
+def _split_loras_from_payload(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Normalize LoRA fields from a request payload into (high, low) lists.
+
+    The mobile client (post-A4) sends ``high_loras`` / ``low_loras``. Older
+    clients still send a flat ``loras`` field; we route those entries to
+    the high branch and emit a one-line deprecation warning so the legacy
+    callers can be tracked down.
+
+    A caller that explicitly passes ``high_loras=[]`` or ``low_loras=[]``
+    is considered to be on the new shape — the legacy ``loras`` fallback
+    only kicks in when BOTH new fields are entirely absent.
+    """
+    high_raw = payload.get("high_loras")
+    low_raw = payload.get("low_loras")
+    high = list(high_raw) if high_raw is not None else []
+    low = list(low_raw) if low_raw is not None else []
+    if high_raw is None and low_raw is None:
+        legacy = payload.get("loras") or []
+        if legacy:
+            print(
+                "[m/loras] DEPRECATED: payload uses flat 'loras=[...]'; "
+                "switch to 'high_loras' / 'low_loras'. Routing legacy "
+                "entries to high_loras.",
+                flush=True,
+            )
+            high = list(legacy)
+    return high, low
+
+
 def build_z_image_workflow(
     prompt: str,
     width: int = 1080,
@@ -44,13 +75,29 @@ def build_z_image_workflow(
     cfg: float = 1.0,
     seed: int | None = None,
     loras: list[dict[str, Any]] | None = None,
+    high_loras: list[dict[str, Any]] | None = None,
+    low_loras: list[dict[str, Any]] | None = None,
     sampler_name: str = "euler",
     scheduler: str = "simple",
     negative: str = "",
 ) -> dict[str, Any]:
-    """Z-Image Turbo workflow (CLIPLoader + qwen_3_4b + ae VAE)."""
+    """Z-Image Turbo workflow (CLIPLoader + qwen_3_4b + ae VAE).
+
+    LoRAs may be supplied in either of two shapes:
+      * ``high_loras=[...], low_loras=[...]`` — preferred (matches the
+        desktop/mobile split UI). Z-Image is single-pass, so the two
+        branches are concatenated (high → low) into one chain.
+      * ``loras=[...]`` — legacy flat list. Used only when both new
+        params are ``None``.
+    """
     if seed is None:
         seed = int(time.time() * 1000) % (2**31)
+
+    # Resolve the effective single-pass chain. When new-shape inputs are
+    # present (even if empty lists), they take precedence over legacy
+    # ``loras``; the legacy field only acts as a fallback.
+    if high_loras is not None or low_loras is not None:
+        loras = list(high_loras or []) + list(low_loras or [])
 
     wf: dict[str, Any] = {
         "1": {
@@ -760,12 +807,22 @@ def build_illustrious_workflow(
     seed: int | None = None,
     negative: str = NEGATIVE_DEFAULT,
     loras: list[dict[str, Any]] | None = None,
+    high_loras: list[dict[str, Any]] | None = None,
+    low_loras: list[dict[str, Any]] | None = None,
     sampler_name: str = "dpmpp_2m_sde",
     scheduler: str = "karras",
 ) -> dict[str, Any]:
-    """Illustrious XL workflow (SDXL family, CheckpointLoaderSimple)."""
+    """Illustrious XL workflow (SDXL family, CheckpointLoaderSimple).
+
+    See ``build_z_image_workflow`` for the LoRA payload contract; SDXL is
+    likewise single-pass, so the high/low branches are concatenated into
+    one ``LoraLoader`` chain.
+    """
     if seed is None:
         seed = int(time.time() * 1000) % (2**31)
+
+    if high_loras is not None or low_loras is not None:
+        loras = list(high_loras or []) + list(low_loras or [])
 
     wf: dict[str, Any] = {
         "1": {
@@ -1138,7 +1195,7 @@ async def m_generate(request: Request) -> JSONResponse:
     width = int(payload.get("width") or (1080 if model == "z_image" else 1024))
     height = int(payload.get("height") or (1920 if model == "z_image" else 1536))
     seed = payload.get("seed")
-    loras = payload.get("loras") or []
+    high_loras, low_loras = _split_loras_from_payload(payload)
 
     file_inputs: dict[str, Any] = {}
 
@@ -1150,7 +1207,8 @@ async def m_generate(request: Request) -> JSONResponse:
         negative = str(payload.get("negative") or "")
         workflow = build_z_image_workflow(
             prompt=prompt, width=width, height=height,
-            steps=steps, cfg=cfg, seed=seed, loras=loras,
+            steps=steps, cfg=cfg, seed=seed,
+            high_loras=high_loras, low_loras=low_loras,
             sampler_name=sampler_name, scheduler=scheduler, negative=negative,
         )
     elif model == "illustrious":
@@ -1162,7 +1220,8 @@ async def m_generate(request: Request) -> JSONResponse:
         workflow = build_illustrious_workflow(
             prompt=prompt, width=width, height=height,
             steps=steps, cfg=cfg, seed=seed,
-            negative=negative, loras=loras,
+            negative=negative,
+            high_loras=high_loras, low_loras=low_loras,
             sampler_name=sampler_name, scheduler=scheduler,
         )
     elif model == "wan_i2v":
@@ -1421,14 +1480,15 @@ async def m_batch_generate(request: Request) -> JSONResponse:
         if seed is None:
             # For batches, vary seed each iteration
             seed = int(time.time() * 1000 + i) % (2**31)
-        loras = params.get("loras") or []
+        high_loras, low_loras = _split_loras_from_payload(params)
 
         if model == "z_image":
             workflow = build_z_image_workflow(
                 prompt=prompt, width=width, height=height,
                 steps=int(params.get("steps") or 8),
                 cfg=float(params.get("cfg") or 1.0),
-                seed=int(seed), loras=loras,
+                seed=int(seed),
+                high_loras=high_loras, low_loras=low_loras,
                 sampler_name=str(params.get("sampler_name") or "euler"),
                 scheduler=str(params.get("scheduler") or "simple"),
                 negative=str(params.get("negative") or ""),
@@ -1440,7 +1500,7 @@ async def m_batch_generate(request: Request) -> JSONResponse:
                 cfg=float(params.get("cfg") or 7.0),
                 seed=int(seed),
                 negative=str(params.get("negative") or NEGATIVE_DEFAULT),
-                loras=loras,
+                high_loras=high_loras, low_loras=low_loras,
                 sampler_name=str(params.get("sampler_name") or "dpmpp_2m_sde"),
                 scheduler=str(params.get("scheduler") or "karras"),
             )
