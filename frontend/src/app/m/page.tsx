@@ -2058,7 +2058,7 @@ function GenerateTab() {
       if (seedMode === 'fixed') {
         body.seed = seedValue
       }
-      if (model !== 'wan_i2v') {
+      {
         const cleanPick = (l: LoraPick) => ({ name: l.name, strength: l.strength })
         const isActive = (l: LoraPick) => Boolean(l.name) && l.name !== '__none__'
         body.high_loras = highLoras.filter(isActive).map(cleanPick)
@@ -2610,37 +2610,37 @@ function GenerateTab() {
         />
       </div>
 
-      {/* LoRA selector — High / Low split picker (image gen only; Wan I2V skips for now) */}
-      {model !== 'wan_i2v' && (
-        <InlineLoraPicker
-          family={activeFamily}
-          familyLabel={activeFamilyLabel}
-          groupedOptions={loraGrouped}
-          highPicks={highLoras}
-          lowPicks={lowLoras}
-          onHighPicksChange={setHighLoras}
-          onLowPicksChange={setLowLoras}
-          accent="orange"
-          isLoading={loraLoading}
-          loadingMessage="Loading LoRA list... (may take 30-60s on cold start)"
-          errorMessage={
-            !loraLoading && filteredLoraOptions.length === 0
-              ? (loraFetchError || `No LoRAs for ${activeFamilyLabel}. Tip: tap Sync on PC's ComfyUI Gen block to populate the cache.`)
-              : undefined
-          }
-          emptyHint='Tap "+ Add High/Low LoRA" to stack quality boosters, characters, or concepts.'
-          headerRightSlot={
-            <button
-              onClick={() => void fetchLoras()}
-              disabled={loraLoading}
-              className="text-[10px] px-1.5 py-1 rounded-md border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40"
-              title="Refresh LoRA list"
-            >
-              <RefreshCw className={`w-3 h-3 ${loraLoading ? 'animate-spin' : ''}`} />
-            </button>
-          }
-        />
-      )}
+      {/* LoRA selector — High / Low split picker. Routes high_loras/low_loras
+          to the dual-pass UNets for wan_i2v, or merges them for single-pass
+          z_image / illustrious. */}
+      <InlineLoraPicker
+        family={activeFamily}
+        familyLabel={activeFamilyLabel}
+        groupedOptions={loraGrouped}
+        highPicks={highLoras}
+        lowPicks={lowLoras}
+        onHighPicksChange={setHighLoras}
+        onLowPicksChange={setLowLoras}
+        accent="orange"
+        isLoading={loraLoading}
+        loadingMessage="Loading LoRA list... (may take 30-60s on cold start)"
+        errorMessage={
+          !loraLoading && filteredLoraOptions.length === 0
+            ? (loraFetchError || `No LoRAs for ${activeFamilyLabel}. Tip: tap Sync on PC's ComfyUI Gen block to populate the cache.`)
+            : undefined
+        }
+        emptyHint='Tap "+ Add High/Low LoRA" to stack quality boosters, characters, or concepts.'
+        headerRightSlot={
+          <button
+            onClick={() => void fetchLoras()}
+            disabled={loraLoading}
+            className="text-[10px] px-1.5 py-1 rounded-md border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40"
+            title="Refresh LoRA list"
+          >
+            <RefreshCw className={`w-3 h-3 ${loraLoading ? 'animate-spin' : ''}`} />
+          </button>
+        }
+      />
 
       {/* Dimensions */}
       <div className="grid grid-cols-2 gap-2">

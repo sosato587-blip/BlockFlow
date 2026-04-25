@@ -669,8 +669,20 @@ def build_wan_i2v_workflow(
     shift: float = 8.0,
     seed: int | None = None,
     negative: str = "static, no movement, blurry, distorted, bad quality, morphing, deformed",
+    high_loras: list[dict[str, Any]] | None = None,
+    low_loras: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Wan 2.2 I2V workflow (high_noise + low_noise 2-pass with ModelSamplingSD3).
+
+    Wan 2.2 is a true dual-expert model: one UNet handles the high-noise
+    early-steps pass, a separate UNet handles the low-noise late-steps
+    pass. ``high_loras`` and ``low_loras`` are injected as independent
+    ``LoraLoaderModelOnly`` chains between each ``UNETLoader`` and the
+    corresponding ``ModelSamplingSD3`` node, mirroring the dual-pass
+    structure. ``LoraLoaderModelOnly`` is used (rather than ``LoraLoader``)
+    because the workflow's text encoder is a separate ``CLIPLoader``,
+    not a checkpoint-bundled CLIP — there is no clip output to thread
+    through.
 
     NOTE: Requires file_inputs to be passed alongside this workflow so the
     handler can download the input image into image_filename before execution.
@@ -678,7 +690,7 @@ def build_wan_i2v_workflow(
     if seed is None:
         seed = int(time.time() * 1000) % (2**31)
 
-    return {
+    wf: dict[str, Any] = {
         # --- Model loaders ---
         "37": {
             "class_type": "UNETLoader",
@@ -796,6 +808,42 @@ def build_wan_i2v_workflow(
             },
         },
     }
+
+    # Dual-pass LoRA injection. high_loras chain sits between UNETLoader "37"
+    # and ModelSamplingSD3 "54"; low_loras chain sits between UNETLoader "56"
+    # and ModelSamplingSD3 "55". Node ids "370<i>" / "560<i>" are picked to
+    # avoid collisions with the existing literals (37, 56, 50, 52, 54-58, 6-9).
+    # ``_meta.title`` is included so a desktop ComfyGen block re-loading the
+    # exported JSON can run the labeled-loader heuristic in lora-mapping.ts.
+    def _inject_chain(
+        wf_dict: dict[str, Any],
+        picks: list[dict[str, Any]] | None,
+        loader_id: str,
+        sampling_id: str,
+        id_prefix: str,
+        title: str,
+    ) -> None:
+        if not picks:
+            return
+        prev = loader_id
+        for i, lora in enumerate(picks):
+            nid = f"{id_prefix}{i}"
+            wf_dict[nid] = {
+                "class_type": "LoraLoaderModelOnly",
+                "inputs": {
+                    "model": [prev, 0],
+                    "lora_name": str(lora.get("name")),
+                    "strength_model": float(lora.get("strength", 1.0)),
+                },
+                "_meta": {"title": title},
+            }
+            prev = nid
+        wf_dict[sampling_id]["inputs"]["model"] = [prev, 0]
+
+    _inject_chain(wf, high_loras, "37", "54", "370", "High Noise LoRA")
+    _inject_chain(wf, low_loras, "56", "55", "560", "Low Noise LoRA")
+
+    return wf
 
 
 def build_illustrious_workflow(
@@ -1244,6 +1292,7 @@ async def m_generate(request: Request) -> JSONResponse:
             prompt=prompt, image_filename=image_filename,
             width=width, height=height, length=length, fps=fps,
             steps=steps, cfg=cfg, seed=seed,
+            high_loras=high_loras, low_loras=low_loras,
         )
         file_inputs = {
             "52": {
