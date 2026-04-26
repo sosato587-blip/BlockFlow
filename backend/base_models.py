@@ -96,6 +96,20 @@ KNOWN_CHECKPOINTS: list[CheckpointInfo] = [
         notes="Main anime checkpoint. 6.6GB, SDXL arch.",
     ),
     CheckpointInfo(
+        filename="nova3DCGXL_illustriousV90.safetensors",
+        family="illustrious",
+        label="Nova 3DCG XL v9.0",
+        notes=(
+            "3DCG / PVC-figure-style anime checkpoint. ~6.5GB, SDXL arch. "
+            "Built on NoobAI EPS v1.1 + Illustrious v2.0-stable (DARE merge). "
+            "Compatible with Illustrious LoRAs. "
+            "Source: https://civitai.com/models/715287 (modelVersionId=2744564). "
+            "If the downloaded file uses a different filename (civitai keeps "
+            "the uploader's name), rename it to the value above or update "
+            "this row."
+        ),
+    ),
+    CheckpointInfo(
         filename="z_image_turbo_bf16.safetensors",
         family="z_image",
         label="Z-Image Turbo (bf16)",
@@ -124,6 +138,21 @@ KNOWN_CHECKPOINTS: list[CheckpointInfo] = [
         family="wan_22",
         label="Wan 2.2 Fun Control low-noise 14B (fp8)",
         notes="Low-noise half for pose-controlled video.",
+    ),
+    CheckpointInfo(
+        filename="Wan2_2-Animate-14B_fp8_scaled_e4m3fn_KJ_v2.safetensors",
+        family="wan_22",
+        label="Wan 2.2 Animate 14B (fp8 KJ v2)",
+        notes=(
+            "Single-pass character-animation model: reference image + "
+            "driving video -> animated character. ~17.3GB. Shares the "
+            "umt5_xxl_fp8 / clip_vision_h / wan_2.1_vae stack with Wan I2V. "
+            "Requires ComfyUI-WanAnimatePreprocess + KJNodes + "
+            "VideoHelperSuite custom nodes on the RunPod side. "
+            "Source: https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled "
+            "(bf16 alt: wan2.2_animate_14B_bf16.safetensors, ~28GB, in "
+            "Comfy-Org/Wan_2.2_ComfyUI_Repackaged)."
+        ),
     ),
     CheckpointInfo(
         filename="ltx-video-2b-v0.9.5.safetensors",
