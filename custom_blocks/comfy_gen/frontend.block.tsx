@@ -94,6 +94,10 @@ interface TextOverrideInfo {
   current_value: string
   label: string
   field_name?: string
+  /** True when the underlying CLIPTextEncode output feeds a "negative"
+   *  conditioning input downstream. The frontend hides these behind a
+   *  toggle (off by default). */
+  is_negative?: boolean
 }
 
 interface ResolutionNodeInfo {
@@ -463,6 +467,11 @@ function ComfyGenBlock({
   const [ksamplerOverrides, setKsamplerOverrides] = useSessionState<Record<string, KSamplerOverride>>(`block_${blockId}_ksampler_overrides`, {})
   const [textOverrides, setTextOverrides] = useSessionState<TextOverrideInfo[]>(`block_${blockId}_text_overrides`, [])
   const [textValues, setTextValues] = useSessionState<Record<string, string>>(`block_${blockId}_text_values`, {})
+  // Negative-prompt textareas are hidden behind a toggle (default off) since
+  // most users only care about the positive prompt. We keep the underlying
+  // textValues / textUpstreamFlags untouched when toggling — only the
+  // visibility changes.
+  const [showNegativePrompts, setShowNegativePrompts] = useSessionState<boolean>(`block_${blockId}_show_negative_prompts`, false)
   const [resolutionNodes, setResolutionNodes] = useSessionState<ResolutionNodeInfo[]>(`block_${blockId}_resolution_nodes`, [])
   const [resolutionOverrides, setResolutionOverrides] = useSessionState<Record<string, { width: string; height: string }>>(`block_${blockId}_resolution_overrides`, {})
   const [frameCounts, setFrameCounts] = useSessionState<FrameCountInfo[]>(`block_${blockId}_frame_counts`, [])
@@ -1231,7 +1240,7 @@ function ComfyGenBlock({
       if (upstreamPrompts.length > 1) {
         // Find the text override key that's bound to upstream
         // Add a single prompt axis — all upstream-bound text fields will receive the same prompt per combo
-        const upstreamKeys = textOverrides.filter((to) => textUpstreamFlags[`${to.node_id}.${to.input_name}`])
+        const upstreamKeys = textOverrides.filter((to) => !to.is_negative && textUpstreamFlags[`${to.node_id}.${to.input_name}`])
         if (upstreamKeys.length > 0) {
           // Use a synthetic key; the batch executor will fan out to all upstream text fields
           axes.push({ key: '__upstream_prompt__', values: upstreamPrompts, label: 'prompt' })
@@ -1306,6 +1315,9 @@ function ComfyGenBlock({
               const promptVal = merged.__upstream_prompt__
               delete merged.__upstream_prompt__
               for (const to of textOverrides) {
+                // Skip negative branches — upstream pipeline prompts only
+                // make sense for positive conditioning.
+                if (to.is_negative) continue
                 if (textUpstreamFlags[`${to.node_id}.${to.input_name}`]) {
                   merged[`${to.node_id}.${to.input_name}`] = promptVal
                 }
@@ -1504,8 +1516,13 @@ function ComfyGenBlock({
     })
   })
 
-  // Group text overrides by their label (node title) for collapsible sections
-  const textOverrideGroups = textOverrides.reduce<Record<string, TextOverrideInfo[]>>((acc, to) => {
+  // Group text overrides by their label (node title) for collapsible sections.
+  // Negative entries are filtered out unless the user opts in via the toggle.
+  const hasNegativeTextOverrides = textOverrides.some((to) => to.is_negative)
+  const visibleTextOverrides = showNegativePrompts
+    ? textOverrides
+    : textOverrides.filter((to) => !to.is_negative)
+  const textOverrideGroups = visibleTextOverrides.reduce<Record<string, TextOverrideInfo[]>>((acc, to) => {
     const groupKey = to.label
     if (!acc[groupKey]) acc[groupKey] = []
     acc[groupKey].push(to)
@@ -2065,10 +2082,25 @@ function ComfyGenBlock({
           per-node advanced control again, restore from commit before this. */}
 
       {/* Text overrides — grouped by node label */}
+      {hasNegativeTextOverrides && (
+        <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={showNegativePrompts}
+            onChange={(e) => setShowNegativePrompts(e.target.checked)}
+            className="h-3 w-3 accent-amber-500"
+          />
+          Show negative prompts (off by default — toggle on to edit)
+        </label>
+      )}
       {Object.entries(textOverrideGroups).map(([groupLabel, items]) => {
         const renderTextField = (to: TextOverrideInfo, showLabel: boolean) => {
           const key = `${to.node_id}.${to.input_name}`
-          const usesUpstream = Boolean(textUpstreamFlags[key])
+          // Negative prompts are always Manual — wiring an upstream prompt
+          // into a negative branch makes no sense in practice. We override
+          // any pre-existing flag here to keep the render coherent.
+          const allowUpstream = hasUpstreamPrompt && !to.is_negative
+          const usesUpstream = allowUpstream && Boolean(textUpstreamFlags[key])
           return (
             <div key={key} className="space-y-1">
               <div className="flex items-center justify-between">
@@ -2079,8 +2111,11 @@ function ComfyGenBlock({
                       {to.field_name}
                     </span>
                   )}
+                  {to.is_negative && (
+                    <span className="ml-1.5 text-[10px] text-amber-400 font-normal">(negative)</span>
+                  )}
                 </Label>
-                {hasUpstreamPrompt && (
+                {allowUpstream && (
                   <Select
                     value={usesUpstream ? '__upstream__' : MANUAL_SOURCE}
                     onValueChange={(v) => setTextUpstreamFlags((prev) => ({ ...prev, [key]: v === '__upstream__' }))}
