@@ -50,6 +50,31 @@ from urllib.request import Request, urlopen
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CACHE_PATH = REPO_ROOT / "comfy_gen_info_cache.json"
+ENV_PATH = REPO_ROOT / ".env"
+
+
+def _load_env_file(path: Path) -> None:
+    """Mirror of backend.config._load_env_file so this script doesn't need
+    BlockFlow's full import chain (which would drag in fastapi etc).
+
+    Reads ``KEY=VALUE`` lines from ``.env``, stripping ``"`` / ``'`` quotes,
+    and only sets keys not already present in os.environ (so an explicitly
+    exported var still wins).
+    """
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = val
+
+
+_load_env_file(ENV_PATH)
 
 # Civitai model IDs to check / download. Order is the order downloads will
 # be attempted. ``label`` is human-friendly; ``model_id`` drives the API.
