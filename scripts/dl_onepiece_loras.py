@@ -369,6 +369,12 @@ def main() -> int:
         help="Actually run the comfy-gen download commands "
              "(after a y/N prompt). Without this, only prints the plan.",
     )
+    ap.add_argument(
+        "--endpoint-id", default="",
+        help="RunPod serverless endpoint id (e.g. xio27s12llqzpa). "
+             "Falls back to RUNPOD_ENDPOINT_ID env var if not given. "
+             "Required for --execute.",
+    )
     args = ap.parse_args()
 
     _print_env_diagnostic()
@@ -420,13 +426,22 @@ def main() -> int:
         return 0
 
     api_key = os.environ.get("RUNPOD_API_KEY", "").strip()
-    endpoint_id = os.environ.get("RUNPOD_ENDPOINT_ID", "").strip()
+    endpoint_id = (args.endpoint_id or os.environ.get("RUNPOD_ENDPOINT_ID", "")).strip()
     if not api_key:
         print("ERROR: RUNPOD_API_KEY env var is empty. Set it (it's already in .env "
               "for normal BlockFlow operation) and retry.")
         return 2
     if not endpoint_id:
-        print("ERROR: RUNPOD_ENDPOINT_ID env var is empty. Set it and retry.")
+        print(
+            "ERROR: RunPod endpoint id is not set. The BlockFlow UI normally\n"
+            "remembers it in browser localStorage, so the .env may not have a\n"
+            "RUNPOD_ENDPOINT_ID line. Three options:\n"
+            "  (a) Pass it on the CLI:    --endpoint-id xio27s12llqzpa\n"
+            "  (b) Add it to .env once:   RUNPOD_ENDPOINT_ID=xio27s12llqzpa\n"
+            "  (c) Export for this shell: $env:RUNPOD_ENDPOINT_ID = 'xio27s12llqzpa'\n"
+            "(replace the id with whatever you have in the ComfyGen block's\n"
+            "'Endpoint ID' field.)"
+        )
         return 2
 
     print()
