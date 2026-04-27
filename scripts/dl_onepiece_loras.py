@@ -3,31 +3,34 @@
 Reads the BlockFlow LoRA cache (``comfy_gen_info_cache.json``, populated
 by the ComfyGen block's Sync button) to learn what's already on the
 RunPod network volume, queries Civitai's public API for the 6 target
-models to get their canonical filenames, and prints the
-``comfy-gen download --source url ...`` commands for the ones that
-aren't there yet. Pass ``--execute`` to actually run them (prompts for
-confirmation; each ``comfy-gen`` invocation hits the RunPod handler so
-this **costs money**).
+models to get their canonical filenames, and submits **one combined
+download job** to RunPod for the ones that aren't there yet. Pass
+``--execute`` to actually submit it (prompts for confirmation;
+hitting the RunPod handler **costs money** while the worker is alive).
 
-Note on the download mode:
-  We intentionally use ``--source url`` (with civitai's REST download
-  endpoint) instead of ``--source civitai``. As of 2026-04 the worker
-  image's civitai-specific code path is broken — it calls a missing
-  ``/tools/civitai-downloader/download_with_aria.py`` and exits 2.
-  The url path goes through the worker's generic downloader, which
-  works for both HuggingFace and civitai.
+Why we POST RunPod directly instead of shelling out to comfy-gen:
+  * The worker's ``--source civitai`` path is currently broken (calls
+    a missing ``/tools/civitai-downloader/download_with_aria.py``).
+  * The installed ``comfy-gen`` CLI doesn't expose a ``--source url``
+    flag, so we can't reuse the LTX_QUICKSTART pattern verbatim.
+  * The worker handler itself accepts the same JSON shape that
+    ``backend/m_routes.py`` already uses for the IP-Adapter / ADetailer /
+    ControlNet auto-DL endpoints (``input.command="download"``,
+    ``input.downloads=[{source:"url", url, dest, filename}]``), so we
+    just construct that JSON locally and POST it.
 
-  If a CIVITAI_API_KEY env var is set when this script runs, the
-  token is embedded in the URL as ``?token=...`` so login-gated
-  models still download. Without the env var, only public models will
-  succeed (civitai returns 401 otherwise, and the script stops).
+Required env vars (already set on the mini PC's .env for normal
+BlockFlow operation):
+  * RUNPOD_API_KEY     — Bearer token for RunPod Serverless
+  * RUNPOD_ENDPOINT_ID — your worker's endpoint id
+  * CIVITAI_API_KEY    — optional, but required for login-gated models
 
 Usage on the mini PC:
 
     # Read-only — preview what would change.
     uv run scripts/dl_onepiece_loras.py
 
-    # Same, but execute the missing downloads after a y/N prompt.
+    # Same, but submit + poll the combined download job.
     uv run scripts/dl_onepiece_loras.py --execute
 
 If the cache file is empty / stale, click "Sync" on a ComfyGen block
@@ -39,8 +42,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -209,7 +212,7 @@ def _build_civitai_url(version_id: int, token: str | None) -> str:
 
 
 def _mask_token_in_url(arg: str) -> str:
-    """Replace ``token=<key>`` with ``token=***...***`` for safe printing."""
+    """Replace ``token=<key>`` with ``token=abcd...wxyz`` for safe printing."""
     if "token=" not in arg:
         return arg
     head, sep, tail = arg.partition("token=")
@@ -220,24 +223,82 @@ def _mask_token_in_url(arg: str) -> str:
     return f"{head}{sep}{masked}{rest}"
 
 
-def render_commands(plan: list[dict], token: str | None) -> list[list[str]]:
-    """Return [[argv0, argv1, ...], ...] for each missing entry.
+def render_downloads(plan: list[dict], token: str | None) -> list[dict]:
+    """Build the ``downloads`` array passed to the RunPod handler.
 
-    Uses ``--source url`` because the worker's ``--source civitai`` path
-    is currently broken (missing /tools/civitai-downloader/download_with_aria.py).
+    Each entry follows the same shape m_routes.py uses for IP-Adapter /
+    ADetailer / ControlNet auto-DL: ``{source, url, dest, filename}``.
     """
-    cmds = []
+    out: list[dict] = []
     for p in plan:
         if not p.get("exists") and "version_id" in p:
-            url = _build_civitai_url(int(p["version_id"]), token)
-            cmds.append([
-                "comfy-gen", "download",
-                "--source", "url",
-                "--url", url,
-                "--dest", "loras",
-                "--filename", str(p["filename"]),
-            ])
-    return cmds
+            out.append({
+                "source": "url",
+                "url": _build_civitai_url(int(p["version_id"]), token),
+                "dest": "loras",
+                "filename": str(p["filename"]),
+            })
+    return out
+
+
+def _runpod_post(endpoint_id: str, api_key: str, body: dict, timeout: int = 30) -> dict:
+    req = Request(
+        f"https://api.runpod.ai/v2/{endpoint_id}/run",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _runpod_status(endpoint_id: str, api_key: str, job_id: str, timeout: int = 15) -> dict:
+    req = Request(
+        f"https://api.runpod.ai/v2/{endpoint_id}/status/{job_id}",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    with urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def submit_download_job(
+    endpoint_id: str,
+    api_key: str,
+    downloads: list[dict],
+    poll_timeout_sec: float = 1200.0,  # 20 min — large LoRAs over slow links
+    poll_interval_sec: float = 5.0,
+) -> dict:
+    """POST one combined download job, then poll until terminal."""
+    submit = _runpod_post(
+        endpoint_id, api_key,
+        {"input": {"command": "download", "downloads": downloads}},
+    )
+    job_id = submit.get("id")
+    if not job_id:
+        raise RuntimeError(f"RunPod submit returned no job id: {submit!r}")
+    print(f"job submitted: {job_id}")
+
+    deadline = time.time() + poll_timeout_sec
+    last_status = ""
+    while time.time() < deadline:
+        try:
+            resp = _runpod_status(endpoint_id, api_key, job_id)
+        except (HTTPError, URLError) as e:
+            print(f"  poll error (will retry): {e}")
+            time.sleep(poll_interval_sec)
+            continue
+        status = str(resp.get("status", "")).upper()
+        if status != last_status:
+            elapsed = int(time.time() - (deadline - poll_timeout_sec))
+            print(f"  [{elapsed}s] {status}")
+            last_status = status
+        if status in ("COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"):
+            return resp
+        time.sleep(poll_interval_sec)
+    raise TimeoutError(f"job {job_id} did not complete within {poll_timeout_sec}s")
 
 
 def main() -> int:
@@ -266,9 +327,8 @@ def main() -> int:
 
     civitai_token = os.environ.get("CIVITAI_API_KEY", "").strip() or None
     if civitai_token:
-        # Print a redacted hint so the user can verify the right key is being used.
         masked = f"{civitai_token[:4]}...{civitai_token[-4:]}" if len(civitai_token) >= 8 else "(short)"
-        print(f"using CIVITAI_API_KEY from env ({masked}) for url-mode downloads")
+        print(f"using CIVITAI_API_KEY from env ({masked}) for civitai download URLs")
     else:
         print("CIVITAI_API_KEY not set — civitai download URLs will be unauthenticated. "
               "Login-gated models will fail with HTTP 401.")
@@ -281,40 +341,66 @@ def main() -> int:
         print(f"  - {p['filename']} ({p['size_mb']} MB){triggers}")
     print()
 
-    cmds = render_commands(plan, civitai_token)
-    print("commands:")
-    for c in cmds:
-        # Mask the token in the printed URL.
-        printable = [a if "token=" not in a else _mask_token_in_url(a) for a in c]
-        print(f"  {' '.join(printable)}")
+    downloads = render_downloads(plan, civitai_token)
+    print("RunPod download payload (one combined job):")
+    print(json.dumps(
+        {"input": {"command": "download", "downloads": [
+            {**d, "url": _mask_token_in_url(d["url"])} for d in downloads
+        ]}},
+        indent=2,
+    ))
 
     if not args.execute:
         print()
-        print("(dry run — pass --execute to actually run these.)")
+        print("(dry run — pass --execute to submit this to RunPod.)")
         return 0
 
+    api_key = os.environ.get("RUNPOD_API_KEY", "").strip()
+    endpoint_id = os.environ.get("RUNPOD_ENDPOINT_ID", "").strip()
+    if not api_key:
+        print("ERROR: RUNPOD_API_KEY env var is empty. Set it (it's already in .env "
+              "for normal BlockFlow operation) and retry.")
+        return 2
+    if not endpoint_id:
+        print("ERROR: RUNPOD_ENDPOINT_ID env var is empty. Set it and retry.")
+        return 2
+
     print()
-    confirm = input(f"Execute {len(cmds)} downloads? This hits RunPod (cost: free for download but billable for active worker). [y/N] ").strip().lower()
+    confirm = input(
+        f"Submit one job with {len(downloads)} download(s) to RunPod endpoint "
+        f"{endpoint_id}? Worker becomes billable while it pulls files. [y/N] "
+    ).strip().lower()
     if confirm not in ("y", "yes"):
         print("Aborted.")
         return 1
 
-    for cmd in cmds:
-        printable = [_mask_token_in_url(a) for a in cmd]
-        print(f"\n>>> {' '.join(printable)}")
-        try:
-            subprocess.run(cmd, check=True)
-        except FileNotFoundError:
-            print("  ERROR: 'comfy-gen' CLI not found on PATH.")
-            return 2
-        except subprocess.CalledProcessError as e:
-            print(f"  ERROR: command exited {e.returncode}; stopping.")
-            return e.returncode
+    print()
+    try:
+        result = submit_download_job(endpoint_id, api_key, downloads)
+    except (HTTPError, URLError) as e:
+        print(f"ERROR submitting job: {e}")
+        return 3
+    except TimeoutError as e:
+        print(f"ERROR: {e}")
+        return 4
+
+    status = str(result.get("status", "")).upper()
+    output = result.get("output")
+    print()
+    print(f"final status: {status}")
+    if output is not None:
+        print(f"output: {json.dumps(output, indent=2, ensure_ascii=False)[:1500]}")
+
+    if status != "COMPLETED":
+        print()
+        print("Job did NOT complete cleanly. Check the output above for handler errors. "
+              "Common causes: RUNPOD balance, worker image bug, civitai 401 on a "
+              "login-gated model.")
+        return 5
 
     print()
-    print("All downloads complete. Verify on the RunPod side with:")
-    print("  comfy-gen list loras")
-    print("Then click 'Sync' on a ComfyGen block to refresh BlockFlow's cache.")
+    print("All downloads requested. Verify on RunPod with `comfy-gen list loras`, "
+          "then click 'Sync' on a ComfyGen block to refresh BlockFlow's cache.")
     return 0
 
 
