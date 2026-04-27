@@ -50,19 +50,27 @@ from urllib.request import Request, urlopen
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CACHE_PATH = REPO_ROOT / "comfy_gen_info_cache.json"
-ENV_PATH = REPO_ROOT / ".env"
+# Look in both the repo root and backend/ — different setups put it in
+# different places. Order is "repo root wins" since that's where
+# backend.config._load_env_file looks first.
+ENV_CANDIDATES = [REPO_ROOT / ".env", REPO_ROOT / "backend" / ".env"]
 
 
-def _load_env_file(path: Path) -> None:
-    """Mirror of backend.config._load_env_file so this script doesn't need
-    BlockFlow's full import chain (which would drag in fastapi etc).
+def _load_env_file(path: Path, *, override_empty: bool = True) -> list[str]:
+    """Read ``KEY=VALUE`` lines from ``.env`` into ``os.environ``.
 
-    Reads ``KEY=VALUE`` lines from ``.env``, stripping ``"`` / ``'`` quotes,
-    and only sets keys not already present in os.environ (so an explicitly
-    exported var still wins).
+    Differences vs backend.config._load_env_file:
+      * Returns the list of keys that were actually applied (used for
+        the diagnostic line printed at the top of every script run).
+      * ``override_empty=True`` (default) replaces values that exist
+        but are empty strings, not just missing keys. This catches the
+        common case where a parent shell has ``RUNPOD_ENDPOINT_ID=""``
+        leaking in, which the stricter ``not in os.environ`` form
+        silently leaves untouched.
     """
+    applied: list[str] = []
     if not path.exists():
-        return
+        return applied
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -70,11 +78,22 @@ def _load_env_file(path: Path) -> None:
         key, val = line.split("=", 1)
         key = key.strip()
         val = val.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if not key:
+            continue
+        existing = os.environ.get(key)
+        already_set = existing is not None and (existing != "" or not override_empty)
+        if not already_set:
             os.environ[key] = val
+            applied.append(key)
+    return applied
 
 
-_load_env_file(ENV_PATH)
+# Auto-load .env at import so calling this script via ``uv run`` doesn't
+# require the user to manually export every key first.
+_loaded_env_summary: list[tuple[str, list[str]]] = []
+for _candidate in ENV_CANDIDATES:
+    if _candidate.exists():
+        _loaded_env_summary.append((str(_candidate), _load_env_file(_candidate)))
 
 # Civitai model IDs to check / download. Order is the order downloads will
 # be attempted. ``label`` is human-friendly; ``model_id`` drives the API.
@@ -326,6 +345,23 @@ def submit_download_job(
     raise TimeoutError(f"job {job_id} did not complete within {poll_timeout_sec}s")
 
 
+def _print_env_diagnostic() -> None:
+    """One-liner showing where .env was found and which keys we filled in."""
+    if not _loaded_env_summary:
+        print("env: no .env file found (looked in repo root and backend/)")
+        return
+    for path, keys in _loaded_env_summary:
+        if keys:
+            print(f"env: loaded from {path} -> {', '.join(sorted(keys))}")
+        else:
+            print(f"env: {path} exists but every key was already set in the shell")
+    # Show whether the three vars we actually need are populated now.
+    for k in ("RUNPOD_API_KEY", "RUNPOD_ENDPOINT_ID", "CIVITAI_API_KEY"):
+        v = os.environ.get(k, "")
+        state = "(set)" if v else "(EMPTY)"
+        print(f"  {k}: {state}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -334,6 +370,9 @@ def main() -> int:
              "(after a y/N prompt). Without this, only prints the plan.",
     )
     args = ap.parse_args()
+
+    _print_env_diagnostic()
+    print()
 
     existing, source = load_existing_loras()
     print(f"existing LoRA inventory: {source}")
