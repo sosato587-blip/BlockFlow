@@ -4,10 +4,23 @@ Reads the BlockFlow LoRA cache (``comfy_gen_info_cache.json``, populated
 by the ComfyGen block's Sync button) to learn what's already on the
 RunPod network volume, queries Civitai's public API for the 6 target
 models to get their canonical filenames, and prints the
-``comfy-gen download civitai <ver_id> --dest loras`` commands for the
-ones that aren't there yet. Pass ``--execute`` to actually run them
-(prompts for confirmation; each ``comfy-gen`` invocation hits the
-RunPod handler so this **costs money**).
+``comfy-gen download --source url ...`` commands for the ones that
+aren't there yet. Pass ``--execute`` to actually run them (prompts for
+confirmation; each ``comfy-gen`` invocation hits the RunPod handler so
+this **costs money**).
+
+Note on the download mode:
+  We intentionally use ``--source url`` (with civitai's REST download
+  endpoint) instead of ``--source civitai``. As of 2026-04 the worker
+  image's civitai-specific code path is broken — it calls a missing
+  ``/tools/civitai-downloader/download_with_aria.py`` and exits 2.
+  The url path goes through the worker's generic downloader, which
+  works for both HuggingFace and civitai.
+
+  If a CIVITAI_API_KEY env var is set when this script runs, the
+  token is embedded in the URL as ``?token=...`` so login-gated
+  models still download. Without the env var, only public models will
+  succeed (civitai returns 401 otherwise, and the script stops).
 
 Usage on the mini PC:
 
@@ -25,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -188,15 +202,40 @@ def render_table(plan: list[dict]) -> None:
     print()
 
 
-def render_commands(plan: list[dict]) -> list[list[str]]:
-    """Return [[argv0, argv1, ...], ...] for each missing entry."""
+def _build_civitai_url(version_id: int, token: str | None) -> str:
+    """Construct the civitai REST download URL, with optional API token query."""
+    base = f"https://civitai.com/api/download/models/{version_id}"
+    return f"{base}?token={token}" if token else base
+
+
+def _mask_token_in_url(arg: str) -> str:
+    """Replace ``token=<key>`` with ``token=***...***`` for safe printing."""
+    if "token=" not in arg:
+        return arg
+    head, sep, tail = arg.partition("token=")
+    end = tail.find("&")
+    val = tail if end == -1 else tail[:end]
+    rest = "" if end == -1 else tail[end:]
+    masked = f"{val[:4]}...{val[-4:]}" if len(val) >= 8 else "***"
+    return f"{head}{sep}{masked}{rest}"
+
+
+def render_commands(plan: list[dict], token: str | None) -> list[list[str]]:
+    """Return [[argv0, argv1, ...], ...] for each missing entry.
+
+    Uses ``--source url`` because the worker's ``--source civitai`` path
+    is currently broken (missing /tools/civitai-downloader/download_with_aria.py).
+    """
     cmds = []
     for p in plan:
         if not p.get("exists") and "version_id" in p:
+            url = _build_civitai_url(int(p["version_id"]), token)
             cmds.append([
-                "comfy-gen", "download", "civitai",
-                str(p["version_id"]),
+                "comfy-gen", "download",
+                "--source", "url",
+                "--url", url,
                 "--dest", "loras",
+                "--filename", str(p["filename"]),
             ])
     return cmds
 
@@ -225,6 +264,16 @@ def main() -> int:
         print("All targets already present (or fetch failed). Nothing to download.")
         return 0
 
+    civitai_token = os.environ.get("CIVITAI_API_KEY", "").strip() or None
+    if civitai_token:
+        # Print a redacted hint so the user can verify the right key is being used.
+        masked = f"{civitai_token[:4]}...{civitai_token[-4:]}" if len(civitai_token) >= 8 else "(short)"
+        print(f"using CIVITAI_API_KEY from env ({masked}) for url-mode downloads")
+    else:
+        print("CIVITAI_API_KEY not set — civitai download URLs will be unauthenticated. "
+              "Login-gated models will fail with HTTP 401.")
+    print()
+
     total_mb = round(sum(p["size_mb"] for p in new_plan), 1)
     print(f"would download {len(new_plan)} new LoRA(s), total {total_mb} MB:")
     for p in new_plan:
@@ -232,10 +281,12 @@ def main() -> int:
         print(f"  - {p['filename']} ({p['size_mb']} MB){triggers}")
     print()
 
-    cmds = render_commands(plan)
+    cmds = render_commands(plan, civitai_token)
     print("commands:")
     for c in cmds:
-        print(f"  {' '.join(c)}")
+        # Mask the token in the printed URL.
+        printable = [a if "token=" not in a else _mask_token_in_url(a) for a in c]
+        print(f"  {' '.join(printable)}")
 
     if not args.execute:
         print()
@@ -249,7 +300,8 @@ def main() -> int:
         return 1
 
     for cmd in cmds:
-        print(f"\n>>> {' '.join(cmd)}")
+        printable = [_mask_token_in_url(a) for a in cmd]
+        print(f"\n>>> {' '.join(printable)}")
         try:
             subprocess.run(cmd, check=True)
         except FileNotFoundError:
