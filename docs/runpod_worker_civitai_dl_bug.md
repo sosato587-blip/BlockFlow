@@ -1,9 +1,12 @@
 # RunPod worker bug report — civitai DL via aria2c hits 403
 
-**Status:** ⛔ Active blocker. Affects every civitai download attempt
-through the BlockFlow scripts (and any other tool that uses the worker's
-``download_handler``). 2026-05-01 confirmed twice on endpoint
-``xio27s12llqzpa``.
+**Status:** ✅ Resolved 2026-05-01 by shipping
+``satoso2/comfyui-serverless:v11-curl-wrapper``. Endpoint
+``xio27s12llqzpa`` template updated, workers recycled, end-to-end
+verification passed (6/6 One Piece LoRAs landed in
+``/runpod-volume/ComfyUI/models/loras/``). See **Resolution** section
+below for the post-mortem. Original triage kept verbatim above
+"Resolution" for the historical record.
 
 ## TL;DR
 
@@ -104,3 +107,95 @@ uv run scripts/dl_onepiece_loras.py --execute --endpoint-id <ENDPOINT_ID>
 
 Expected: ``final status: COMPLETED`` and 6 LoRA files appear in
 ``comfy-gen list loras`` output.
+
+---
+
+## Resolution (2026-05-01)
+
+The first attempted fix (v10) added ``--user-agent`` to the aria2c
+invocation by editing ``download_handler.py``. **This was insufficient**:
+Cloudflare's WAF in front of ``b2.civitai.com`` fingerprints aria2c's
+TLS handshake (JA3) and the absence of browser-only request headers, not
+just the User-Agent string. The redirected fetch still came back 403.
+End-to-end re-test confirmed.
+
+The successful fix (v11) routes the actual fetch through curl, which
+uses a different TLS stack and a fuller header set that Cloudflare lets
+through. Critically, this is done **without modifying Hearmeman's Python
+handler**:
+
+```dockerfile
+COPY aria2c-wrapper.sh /usr/local/bin/aria2c-wrapper.sh
+RUN chmod +x /usr/local/bin/aria2c-wrapper.sh && \
+    mv /usr/bin/aria2c /usr/bin/aria2c-real && \
+    cp /usr/local/bin/aria2c-wrapper.sh /usr/bin/aria2c && \
+    chmod +x /usr/bin/aria2c
+```
+
+The shim parses ``-d <dir>`` / ``-o <filename>`` from aria2c's argv,
+ignores benign flags (``--summary-interval=…``, ``--user-agent=…``,
+``--allow-overwrite=…``, ``--console-log-level=…``), and runs:
+
+```bash
+curl --location --fail --silent --show-error --retry 3 \
+     --user-agent "Mozilla/5.0 ... Chrome/126.0.0.0 ..." \
+     -H "Accept: */*" \
+     -H "Accept-Language: en-US,en;q=0.9" \
+     -H "Accept-Encoding: identity" \
+     -o "$dest_dir/$filename" "$url"
+```
+
+Unknown flags fall through to the renamed real binary at
+``/usr/bin/aria2c-real`` so interactive debugging on the worker is
+unaffected.
+
+### Why a shim instead of editing the Python
+
+The handler is a verbatim copy of
+[``Hearmeman24/remote-comfy-gen-handler``](https://github.com/Hearmeman24/remote-comfy-gen-handler)
+(MD5 ``5223f55c22276a9e55e2cf4583765c41`` matches GitHub HEAD on
+2026-05-01). Editing it in place would create merge friction every time
+upstream ships a fix. The shim is purely a Dockerfile-level concern and
+leaves the vendored Python pristine.
+
+### Limitations (acceptable for now)
+
+- The handler's per-chunk progress parser (``_parse_aria2c_progress``)
+  expects aria2c's ``[#xxx 1.2GiB/3.5GiB(34%) DL:…]`` format. curl
+  doesn't emit those lines, so in-flight progress events stop firing
+  during a download. The handler's pre-download / post-download
+  progress events still work. If we need granular progress later,
+  rewrite the shim in Python and emit aria2c-shaped lines.
+- The shim only translates the small subset of aria2c flags the handler
+  uses today. New flags introduced by an upstream Hearmeman update
+  would fall through to ``aria2c-real`` and re-trigger the original
+  WAF 403. Add the new flag(s) to the case statement when that happens.
+
+### Secondary bug — ``--source civitai`` path
+
+``CIVITAI_SCRIPT`` in ``download_handler.py`` points at
+``/tools/civitai-downloader/download_with_aria.py`` which does not
+exist in our image. Callers should use ``source="url"`` with
+``https://civitai.com/api/download/models/<vid>?token=…`` instead, which
+goes through the patched ``_download_url`` and works. We did NOT fix
+this in 2026-05-01 — it would require either re-adding the helper
+script or rewriting ``_download_civitai`` to delegate to
+``_download_url``.
+
+### Verification
+
+```bash
+# On the mini PC (or any machine with the env vars)
+cd C:\Users\sato\BlockFlow
+$env:CIVITAI_API_KEY = "..."  # if not in .env
+uv run scripts/dl_onepiece_loras.py --execute --endpoint-id xio27s12llqzpa
+
+# Then on RunPod (after the job completes):
+curl -X POST https://api.runpod.ai/v2/xio27s12llqzpa/runsync \
+  -H "Authorization: Bearer $RUNPOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":{"command":"list_models","model_type":"loras"}}' \
+  | jq '.output.files[] | select(.filename | test("Boa_Hancock|NicoRobin_OnePiece|One_Piece_Manga|PeronaOnePiece|onepiece_nami|yamato"))'
+```
+
+Expected: 6 entries returned, all in ``/runpod-volume/ComfyUI/models/loras/``.

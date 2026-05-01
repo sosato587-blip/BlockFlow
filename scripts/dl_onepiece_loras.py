@@ -1,13 +1,12 @@
 """DL helper for the One Piece female-character LoRA set.
 
-⛔ BLOCKED 2026-05-01: ``--execute`` will currently fail with a worker-side
-   aria2c 403 against ``b2.civitai.com`` (Cloudflare WAF rejecting aria2c's
-   default User-Agent — civitai-side auth is fine). The dry-run path still
-   works for previewing the plan. Full triage in
-   ``docs/runpod_worker_civitai_dl_bug.md``. Once the worker image patches
-   ``/handler/download_handler.py`` (e.g. adds ``--user-agent`` to the
-   aria2c invocation), drop this notice and re-run.
-
+Worker-side civitai DL bug from 2026-05-01 was resolved later that day by
+shipping ``satoso2/comfyui-serverless:v11-curl-wrapper`` — an
+/usr/bin/aria2c shim that routes through curl, bypassing the Cloudflare
+WAF on b2.civitai.com without modifying Hearmeman's pristine handler
+Python. See ``docs/runpod_worker_civitai_dl_bug.md`` for the full
+post-mortem. ``--execute`` is now expected to succeed on endpoint
+``xio27s12llqzpa``.
 
 Reads the BlockFlow LoRA cache (``comfy_gen_info_cache.json``, populated
 by the ComfyGen block's Sync button) to learn what's already on the

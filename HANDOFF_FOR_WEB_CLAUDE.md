@@ -84,8 +84,8 @@
 - キーボードショートカット（Ctrl+Enter で generate）
 - ドキュメントのスクショ追加
 
-### ⛔ Active blockers (worker side, BlockFlow からは直せない)
-- **RunPod worker の civitai DL が壊れている**（2026-05-01 確認）: `/handler/download_handler.py` が aria2c で `b2.civitai.com` を叩くと 403（Cloudflare WAF が aria2c のデフォルト User-Agent を bot 判定）。`--source civitai` パスは別バグ（`/tools/civitai-downloader/download_with_aria.py` が image に存在しない）。**詳細・再現・修正案は [`docs/runpod_worker_civitai_dl_bug.md`](docs/runpod_worker_civitai_dl_bug.md)**。ユーザーが worker メンテナにエスカレ予定。それまで `scripts/dl_onepiece_loras.py --execute` は失敗する（dry-run は OK）。ワークアラウンド: ブラウザ DL → `runpodctl send` か Network Volume 直アップ。
+### ✅ Resolved blockers
+- **(2026-05-01) RunPod worker の civitai DL** — `satoso2/comfyui-serverless:v11-curl-wrapper` で解決。ai-creator-stack の `claude/civitai-aria2c-ua-fix` ブランチで `/usr/bin/aria2c` を curl 呼び出しの shim に差し替え（Hearmeman の Python は無修正）。`scripts/dl_onepiece_loras.py --execute` で 6/6 着地確認済み。事後分析は [`docs/runpod_worker_civitai_dl_bug.md`](docs/runpod_worker_civitai_dl_bug.md) に追記。`--source civitai` の missing-script バグは別件として未対応（callers should use `source="url"` を継続）。
 
 ### 💬 ユーザー判断待ち
 - **動画モデル用ブロックの設計**: WAN 2.2 I2V / LTX Video 用 UI を画像ブロックと同じ「1ブロック全部インライン」パターンにするか、専用 high/low 入力の別パターンにするか
