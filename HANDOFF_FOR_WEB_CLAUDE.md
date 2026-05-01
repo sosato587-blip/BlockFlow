@@ -84,6 +84,9 @@
 - キーボードショートカット（Ctrl+Enter で generate）
 - ドキュメントのスクショ追加
 
+### ⛔ Active blockers (worker side, BlockFlow からは直せない)
+- **RunPod worker の civitai DL が壊れている**（2026-05-01 確認）: `/handler/download_handler.py` が aria2c で `b2.civitai.com` を叩くと 403（Cloudflare WAF が aria2c のデフォルト User-Agent を bot 判定）。`--source civitai` パスは別バグ（`/tools/civitai-downloader/download_with_aria.py` が image に存在しない）。**詳細・再現・修正案は [`docs/runpod_worker_civitai_dl_bug.md`](docs/runpod_worker_civitai_dl_bug.md)**。ユーザーが worker メンテナにエスカレ予定。それまで `scripts/dl_onepiece_loras.py --execute` は失敗する（dry-run は OK）。ワークアラウンド: ブラウザ DL → `runpodctl send` か Network Volume 直アップ。
+
 ### 💬 ユーザー判断待ち
 - **動画モデル用ブロックの設計**: WAN 2.2 I2V / LTX Video 用 UI を画像ブロックと同じ「1ブロック全部インライン」パターンにするか、専用 high/low 入力の別パターンにするか
 - **`lora_selector` の base_model 未接続時の挙動**: 現状 illustrious デフォルト。「全 LoRA alphabetical で出す」に変えるか
