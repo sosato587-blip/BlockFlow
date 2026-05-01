@@ -464,11 +464,23 @@ def main() -> int:
         return 4
 
     status = str(result.get("status", "")).upper()
-    output = result.get("output")
     print()
     print(f"final status: {status}")
+
+    # On failure RunPod usually puts the handler traceback in ``error`` (or
+    # sometimes ``output`` if the handler returned an error dict). Print
+    # both with generous truncation so we can see exit codes / file paths.
+    error_field = result.get("error")
+    output = result.get("output")
+    if error_field:
+        snippet = json.dumps(error_field, indent=2, ensure_ascii=False) if not isinstance(error_field, str) else error_field
+        print(f"error:\n{snippet[:3000]}")
     if output is not None:
-        print(f"output: {json.dumps(output, indent=2, ensure_ascii=False)[:1500]}")
+        print(f"output:\n{json.dumps(output, indent=2, ensure_ascii=False)[:3000]}")
+    if not error_field and output is None:
+        # Last resort: dump the whole status response so the user has
+        # something to paste back.
+        print(f"raw status response:\n{json.dumps(result, indent=2, ensure_ascii=False)[:3000]}")
 
     if status != "COMPLETED":
         print()
