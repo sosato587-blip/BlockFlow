@@ -1,6 +1,7 @@
 // AUTO-GENERATED. DO NOT EDIT.
 // Run `npm run gen:custom-blocks` to regenerate.
 import { registerBlockDef } from '@/lib/pipeline/registry'
+import { blockDef as adetailerBlockDef } from './generated/adetailer'
 import { blockDef as baseModelSelectorBlockDef } from './generated/base_model_selector'
 import { blockDef as charaipBlockDef } from './generated/charaip'
 import { blockDef as civitaiShareBlockDef } from './generated/civitai_share'
@@ -24,6 +25,7 @@ import { blockDef as wan22ImageToVideoBlockDef } from './generated/wan_22_image_
 import { blockDef as wanAnimateBlockDef } from './generated/wan_animate'
 import { blockDef as wanFunControlBlockDef } from './generated/wan_fun_control'
 
+registerBlockDef(adetailerBlockDef)
 registerBlockDef(baseModelSelectorBlockDef)
 registerBlockDef(charaipBlockDef)
 registerBlockDef(civitaiShareBlockDef)
