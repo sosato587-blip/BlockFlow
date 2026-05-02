@@ -140,18 +140,43 @@ KNOWN_CHECKPOINTS: list[CheckpointInfo] = [
         notes="Low-noise half for pose-controlled video.",
     ),
     CheckpointInfo(
-        filename="Wan2_2-Animate-14B_fp8_scaled_e4m3fn_KJ_v2.safetensors",
+        filename="Wan2_2-Animate-14B_fp8_e4m3fn_scaled_KJ.safetensors",
         family="wan_22",
-        label="Wan 2.2 Animate 14B (fp8 KJ v2)",
+        label="Wan 2.2 Animate 14B (fp8 KJ)",
         notes=(
             "Single-pass character-animation model: reference image + "
-            "driving video -> animated character. ~17.3GB. Shares the "
-            "umt5_xxl_fp8 / clip_vision_h / wan_2.1_vae stack with Wan I2V. "
-            "Requires ComfyUI-WanAnimatePreprocess + KJNodes + "
-            "VideoHelperSuite custom nodes on the RunPod side. "
+            "driving video -> animated character. ~17 GB. The Kijai "
+            "WanVideoWrapper example workflow expects this exact filename "
+            "(see custom_blocks/wan_animate/WAN_ANIMATE_DESIGN.md for the "
+            "full required-files list and node graph). "
             "Source: https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled "
-            "(bf16 alt: wan2.2_animate_14B_bf16.safetensors, ~28GB, in "
-            "Comfy-Org/Wan_2.2_ComfyUI_Repackaged)."
+            "(path: WanVideo/2_2/). bf16 alt: wan2.2_animate_14B_bf16.safetensors "
+            "(~28 GB, Comfy-Org/Wan_2.2_ComfyUI_Repackaged) — uses a different, "
+            "simpler workflow (WanAnimateToVideoEnhanced) and is NOT what the "
+            "current scaffolding targets."
+        ),
+    ),
+    CheckpointInfo(
+        filename="WanAnimate_relight_lora_fp16.safetensors",
+        family="wan_22",
+        label="Wan Animate relight LoRA (fp16)",
+        notes=(
+            "Relight LoRA recommended by Kijai's example workflow. "
+            "Default strength 1.0. ~600 MB. "
+            "Source: https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled "
+            "(path: WanVideo/)."
+        ),
+    ),
+    CheckpointInfo(
+        filename="lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+        family="wan_22",
+        label="lightx2v I2V 14B 480p CFG step-distill rank64 (bf16)",
+        notes=(
+            "Speed-distillation LoRA. Lets Wan 2.2 Animate run at "
+            "steps=6 instead of 25-30 with negligible quality loss; "
+            "default strength 1.2. ~1 GB. "
+            "Source: https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled "
+            "(path: WanVideo/Lightx2v/)."
         ),
     ),
     CheckpointInfo(

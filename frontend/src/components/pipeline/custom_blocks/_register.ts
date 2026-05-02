@@ -16,6 +16,7 @@ import { blockDef as upscaleBlockDef } from './generated/upscale'
 import { blockDef as videoLoaderBlockDef } from './generated/video_loader'
 import { blockDef as videoViewerBlockDef } from './generated/video_viewer'
 import { blockDef as wan22ImageToVideoBlockDef } from './generated/wan_22_image_to_video'
+import { blockDef as wanAnimateBlockDef } from './generated/wan_animate'
 import { blockDef as wanFunControlBlockDef } from './generated/wan_fun_control'
 
 registerBlockDef(baseModelSelectorBlockDef)
@@ -33,4 +34,5 @@ registerBlockDef(upscaleBlockDef)
 registerBlockDef(videoLoaderBlockDef)
 registerBlockDef(videoViewerBlockDef)
 registerBlockDef(wan22ImageToVideoBlockDef)
+registerBlockDef(wanAnimateBlockDef)
 registerBlockDef(wanFunControlBlockDef)
