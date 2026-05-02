@@ -10,6 +10,7 @@ import { blockDef as i2vPromptWriterBlockDef } from './generated/i2v_prompt_writ
 import { blockDef as imageUpscaleBlockDef } from './generated/image_upscale'
 import { blockDef as imageViewerBlockDef } from './generated/image_viewer'
 import { blockDef as loraSelectorBlockDef } from './generated/lora_selector'
+import { blockDef as ltxVideoBlockDef } from './generated/ltx_video'
 import { blockDef as promptWriterBlockDef } from './generated/prompt_writer'
 import { blockDef as uploadImageToTmpfilesBlockDef } from './generated/upload_image_to_tmpfiles'
 import { blockDef as upscaleBlockDef } from './generated/upscale'
@@ -28,6 +29,7 @@ registerBlockDef(i2vPromptWriterBlockDef)
 registerBlockDef(imageUpscaleBlockDef)
 registerBlockDef(imageViewerBlockDef)
 registerBlockDef(loraSelectorBlockDef)
+registerBlockDef(ltxVideoBlockDef)
 registerBlockDef(promptWriterBlockDef)
 registerBlockDef(uploadImageToTmpfilesBlockDef)
 registerBlockDef(upscaleBlockDef)
