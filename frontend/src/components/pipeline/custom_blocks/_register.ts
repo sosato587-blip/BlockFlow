@@ -5,6 +5,7 @@ import { blockDef as baseModelSelectorBlockDef } from './generated/base_model_se
 import { blockDef as charaipBlockDef } from './generated/charaip'
 import { blockDef as civitaiShareBlockDef } from './generated/civitai_share'
 import { blockDef as comfyGenBlockDef } from './generated/comfy_gen'
+import { blockDef as controlnetBlockDef } from './generated/controlnet'
 import { blockDef as generationBlockDef } from './generated/generation'
 import { blockDef as hitlBlockDef } from './generated/hitl'
 import { blockDef as i2vPromptWriterBlockDef } from './generated/i2v_prompt_writer'
@@ -27,6 +28,7 @@ registerBlockDef(baseModelSelectorBlockDef)
 registerBlockDef(charaipBlockDef)
 registerBlockDef(civitaiShareBlockDef)
 registerBlockDef(comfyGenBlockDef)
+registerBlockDef(controlnetBlockDef)
 registerBlockDef(generationBlockDef)
 registerBlockDef(hitlBlockDef)
 registerBlockDef(i2vPromptWriterBlockDef)
