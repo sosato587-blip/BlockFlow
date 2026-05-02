@@ -158,15 +158,30 @@ blockflow/
 
 ## 8. S2-Full: Desktop/Mobile アーキテクチャ完全統一
 
-**ステータス:** 📝 計画中、長期（3 ヶ月以上）
+**ステータス:** 🟡 進行中（2026-05-02、フェーズ 1 完了）
 
 **目標:** `/api/m/*` と mobile 専用 workflow builder を退役。すべての mobile 操作を desktop のブロック API 経由で実行する。
 
-**サブタスク:**
-- Inpaint / Outpaint / ControlNet / CharaIP / ADetailer / CharacterSheet / LTXVideo の desktop ブロックを新設
-- `m_routes.py` の Python workflow builder をブロックごとの `backend.block.py` に移管
-- Mobile 送信を `/api/m/*` から `/api/blocks/*/run` に切替
-- 命令型 Python builder を宣言型 JSON テンプレに置換
+**フェーズ 1（完了 — 2026-05-02）: 7 ブロック新設**
+
+7 つの mobile-only flow すべてに desktop block を追加。ブロックは `m_routes.build_*_workflow` をそのまま再利用するシンの薄い wrapper。
+
+| ブロック | slug | input ports | output port | 元の mobile route |
+|---|---|---|---|---|
+| LTX Video | `ltx_video` | image (opt), prompt | video | `/api/m/ltx_video` |
+| CharaIP (IP-Adapter) | `charaip` | reference_image, prompt | image | `/api/m/generate_charaip` |
+| Inpaint | `inpaint` | image, mask, prompt | image | `/api/m/inpaint` |
+| Outpaint | `outpaint` | image, prompt | image | `/api/m/outpaint` |
+| ControlNet (Canny) | `controlnet` | reference_image, prompt | image | `/api/m/generate_controlnet` |
+| ADetailer | `adetailer` | image | image | `/api/m/adetailer` |
+| Character Sheet | `characterSheet` | prompt | image | `/api/m/character_sheet` |
+
+各ブロックは `custom_blocks/<slug>/{backend.block.py, frontend.block.tsx}` の 2 ファイル構成。
+画像 / 動画 input には `<UrlOrFileInput>` を組み込んでおり、URL ペーストかドラッグ&ドロップで `tmpfiles.org` に直接アップロード可能。
+
+**フェーズ 2（残作業）:**
+- mobile UI を `/api/m/*` から `/api/blocks/<slug>/run` に切り替え（payload はほぼ同一なので薄い変換層で済む）
+- 命令型 Python builder を宣言型 JSON テンプレに置換（Wan Animate で確立した canvas → API 変換パターンを横展開）
 - `m_routes.py` 本体を退役（`m_store.py` はプリセット・コスト・Publications・Schedules 用に残す）
 
 **A4 で済ませた前進:**
