@@ -3,6 +3,7 @@
 import { registerBlockDef } from '@/lib/pipeline/registry'
 import { blockDef as adetailerBlockDef } from './generated/adetailer'
 import { blockDef as baseModelSelectorBlockDef } from './generated/base_model_selector'
+import { blockDef as characterSheetBlockDef } from './generated/character_sheet'
 import { blockDef as charaipBlockDef } from './generated/charaip'
 import { blockDef as civitaiShareBlockDef } from './generated/civitai_share'
 import { blockDef as comfyGenBlockDef } from './generated/comfy_gen'
@@ -27,6 +28,7 @@ import { blockDef as wanFunControlBlockDef } from './generated/wan_fun_control'
 
 registerBlockDef(adetailerBlockDef)
 registerBlockDef(baseModelSelectorBlockDef)
+registerBlockDef(characterSheetBlockDef)
 registerBlockDef(charaipBlockDef)
 registerBlockDef(civitaiShareBlockDef)
 registerBlockDef(comfyGenBlockDef)
