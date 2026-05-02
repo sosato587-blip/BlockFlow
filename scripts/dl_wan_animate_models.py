@@ -249,12 +249,29 @@ def main() -> int:
                     help="Skip the lightx2v acceleration LoRA (keep relight). "
                          "Use this if you want full-quality 25-30 step renders "
                          "instead of the lightx2v 6-step path.")
+    ap.add_argument(
+        "--only", default="",
+        help="Comma-separated subset of roles to DL (skip everything else). "
+             "Valid roles: " + ", ".join(t["role"] for t in TARGETS) +
+             ". Useful when retrying a partial DL — e.g. "
+             "``--only text_encoder,vae,lora_relight,lora_lightx2v`` skips "
+             "the already-downloaded UNet.",
+    )
     args = ap.parse_args()
 
     _print_env_diagnostic()
     print()
 
     plan = list(TARGETS)
+    if args.only:
+        wanted = {r.strip() for r in args.only.split(",") if r.strip()}
+        valid_roles = {t["role"] for t in TARGETS}
+        unknown = wanted - valid_roles
+        if unknown:
+            print(f"ERROR: --only got unknown role(s): {', '.join(sorted(unknown))}. "
+                  f"Valid: {', '.join(sorted(valid_roles))}", file=sys.stderr)
+            return 2
+        plan = [t for t in plan if t["role"] in wanted]
     if args.skip_loras:
         plan = [t for t in plan if t["dest"] != "loras"]
     elif args.skip_acceleration:
