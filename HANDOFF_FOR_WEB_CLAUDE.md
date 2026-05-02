@@ -34,9 +34,21 @@
 - モデル DL（数 GB 単位）
 - 実行して $ が飛ぶものは全部ユーザー確認
 
-## 3. 現在の状態（2026-04-23 時点）
+## 3. 現在の状態（2026-05-01 時点）
 
-### 今朝のセッションでやったこと（main に push 済み）
+### 直近セッション（ブランチ `claude/continue-a4-task-2-sjRcI`、main 未マージ・PR 化予定）
+
+| Commit | 内容 |
+|---|---|
+| `68bab75` `90a7245` `b578746` `5a019a7` `917e830` `8f39ed4` | A4 全 12 タスク（共有 `<InlineLoraPicker>`、`computeInlineLoraOverrides` 集約、mobile state split、wan_i2v dual-pass LoRA、`high_loras`/`low_loras` payload、テスト 27 ケース、HANDOFF 更新） |
+| `f6c170e` | feat(comfy_gen): Negative Prompt トグル（既定 OFF）。`is_negative` フラグで条件分岐、Manual 固定 |
+| `b743302` | feat(catalog): Wan 2.2 Animate 14B + Nova 3DCG XL v9.0 を `KNOWN_CHECKPOINTS` 登録、`COST_RATES` に `wan_animate` / `wan_fun_control` / `ltx_video` 追加（テスト 12 ケース）|
+| `9be0955` → `218306c` | One Piece キャラ LoRA DL 用 `scripts/dl_onepiece_loras.py`（dedup 比較 + 一発 RunPod 投入）。途中で worker 側の civitai DL バグ判明、blocker doc 化 |
+| `fe23625` | docs: civitai DL blocker は `satoso2/comfyui-serverless:v11-curl-wrapper` で解消（ai-creator-stack の curl shim、Hearmeman の Python 無修正）。6/6 LoRA 着地確認済み |
+
+**テスト**: pytest 39/39（`test_lora_mapping`, `test_m_routes_loras`, `test_cost_rates`）/ vitest `lora-mapping.test.ts` 13/13。
+
+### 過去（main に push 済み・参考）
 | Commit | 内容 |
 |---|---|
 | `a64ef80` | fix(app): PEP 723 から `comfy-gen` 除去（起動不能バグ修正） |
@@ -48,9 +60,8 @@
 | `e926ca7` | docs(readme): Base Model / LoRA Selector / inline LoRA 追記 |
 
 ### 検収済み（ユーザー確認済み）
-- ミニPC で `git pull origin main` → 衝突なし
-- `uv run app.py` 起動成功
-- ブラウザで動作確認済み
+- ミニPC で A4 動作確認（`/generate` ComfyGen + `/m` どちらも LoRA UI 正常表示、wan_i2v でも picker 出る）
+- One Piece LoRA 6/6 が `/runpod-volume/ComfyUI/models/loras/` に着地（worker v11 シム経由）
 
 ## 4. 残タスク（優先度順）
 
