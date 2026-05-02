@@ -1939,10 +1939,15 @@ async def m_delete_schedule(sched_id: str) -> JSONResponse:
 
 @router.post("/api/m/upload")
 async def m_upload(request: Request) -> JSONResponse:
-    """Upload a base64-encoded image to tmpfiles.org and return public URL.
+    """Upload a base64-encoded blob to tmpfiles.org and return public URL.
 
     Body: { "data": "data:image/png;base64,iVBOR...", "filename": "mask.png" (optional) }
     Returns: { "ok": true, "url": "https://tmpfiles.org/dl/..." }
+
+    Accepts both images and short videos. tmpfiles.org caps free uploads
+    at ~100 MB and the URL expires after ~1 hour, which is enough for the
+    Wan I2V / Wan Animate driving-video flow (worker pulls the file
+    within 1-3 minutes of submission).
     """
     import traceback
     try:
@@ -1959,8 +1964,14 @@ async def m_upload(request: Request) -> JSONResponse:
         except Exception as e:
             return JSONResponse({"ok": False, "error": f"base64 decode failed: {e}"}, status_code=400)
 
-        if len(blob) < 64 or len(blob) > 20 * 1024 * 1024:
-            return JSONResponse({"ok": False, "error": f"blob size out of range ({len(blob)} bytes)"}, status_code=400)
+        # 100 MB ceiling matches tmpfiles.org's free-tier limit. The
+        # original ceiling was 20 MB (image-only era) — bumped so short
+        # MP4 driving videos (5-10 sec, 720p, ~30-60 MB typical) fit.
+        if len(blob) < 64 or len(blob) > 100 * 1024 * 1024:
+            return JSONResponse(
+                {"ok": False, "error": f"blob size out of range ({len(blob)} bytes; allowed 64 B – 100 MB)"},
+                status_code=400,
+            )
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix or ".png") as tf:
             tf.write(blob)

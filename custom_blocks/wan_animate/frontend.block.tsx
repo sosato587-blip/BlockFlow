@@ -34,6 +34,7 @@ import {
   type BlockDef,
   type BlockComponentProps,
 } from '@/lib/pipeline/registry'
+import { UrlOrFileInput } from '@/components/upload/UrlOrFileInput'
 
 const ENDPOINT_KEY = 'wan_animate_endpoint_id'
 const DEFAULT_ENDPOINT_ID = 'xio27s12llqzpa'
@@ -291,19 +292,19 @@ function WanAnimateBlock({
           </Select>
         </div>
         {!isImageWired && (
-          <Input
+          <UrlOrFileInput
             value={inputImage}
-            onChange={(e) => imageBinding?.setLocalValue(e.target.value)}
-            placeholder="https://... start image URL"
-            className="h-8 text-xs"
+            onChange={(v) => imageBinding?.setLocalValue(v)}
+            accept="image/*"
+            placeholder="https://... or use Upload (reference image)"
           />
         )}
       </div>
 
-      {/* Control Video */}
+      {/* Driving Video */}
       <div className="space-y-1">
         <div className="flex items-center justify-between">
-          <Label className="text-xs">Control Video (dance)</Label>
+          <Label className="text-xs">Driving Video</Label>
           <Select
             value={videoBinding?.selectedSourceValue || MANUAL_SOURCE}
             onValueChange={(v) => videoBinding?.setSelectedSource?.(v)}
@@ -319,11 +320,11 @@ function WanAnimateBlock({
           </Select>
         </div>
         {!isVideoWired && (
-          <Input
+          <UrlOrFileInput
             value={inputVideo}
-            onChange={(e) => videoBinding?.setLocalValue(e.target.value)}
-            placeholder="https://... control video URL"
-            className="h-8 text-xs"
+            onChange={(v) => videoBinding?.setLocalValue(v)}
+            accept="video/*"
+            placeholder="https://... or use Upload (driving mp4 ≤ 100 MB)"
           />
         )}
       </div>
@@ -443,7 +444,9 @@ export const blockDef: BlockDef = {
   description:
     'Identity-preserving character animation: reference image + driving video -> animated video ' +
     '(Kijai WanVideoWrapper, single-pass 14B fp8 + lightx2v acceleration LoRA).',
-  advanced: true,
+  // Promoted out of advanced palette 2026-05-02: end-to-end tested
+  // path, default LoRAs cover the common case, file uploads work via
+  // the shared UrlOrFileInput.
   size: 'huge',
   canStart: false,
   inputs: [

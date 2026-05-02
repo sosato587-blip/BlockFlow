@@ -43,6 +43,7 @@ import {
   toggleRunFavorite,
 } from '@/lib/api'
 import { InlineLoraPicker, type LoraPick } from '@/components/lora/InlineLoraPicker'
+import { UrlOrFileInput } from '@/components/upload/UrlOrFileInput'
 
 // R2 image type (kept locally to avoid dependency on uncommitted lib changes).
 interface R2Image {
@@ -2589,42 +2590,44 @@ function GenerateTab() {
         )}
       </div>
 
-      {/* Image URL input (Wan I2V + Wan Animate) */}
+      {/* Image URL input (Wan I2V + Wan Animate). Accepts either an
+          R2 / external URL or a local file (auto-uploaded to tmpfiles
+          via /api/m/upload). */}
       {(model === 'wan_i2v' || model === 'wan_animate') && (
         <div className="space-y-1.5">
           <label className="text-xs font-medium text-muted-foreground">
-            {model === 'wan_animate' ? 'Reference Image URL' : 'Input Image URL'}
+            {model === 'wan_animate' ? 'Reference Image' : 'Input Image'}
             <span className="text-orange-400"> *</span>
           </label>
-          <Input
+          <UrlOrFileInput
             value={imageUrl}
-            onChange={(e) => setImageUrl(e.target.value)}
-            placeholder="https://... (R2 or any public image URL)"
-            className="h-9 text-xs font-mono"
+            onChange={setImageUrl}
+            accept="image/*"
+            placeholder="https://... or use Upload"
           />
           <p className="text-[10px] text-muted-foreground">
             {model === 'wan_animate'
               ? 'Single still of the character whose identity should be preserved across the driving video.'
-              : 'Tip: Generate an image first (Z-Image / Illustrious), then paste its URL here'}
+              : 'Tip: Generate an image first (Z-Image / Illustrious) then paste its URL — or just Upload a local file.'}
           </p>
         </div>
       )}
 
-      {/* Driving video URL input (Wan Animate only) */}
+      {/* Driving video (Wan Animate only). */}
       {model === 'wan_animate' && (
         <div className="space-y-1.5">
           <label className="text-xs font-medium text-muted-foreground">
-            Driving Video URL <span className="text-orange-400">*</span>
+            Driving Video <span className="text-orange-400">*</span>
           </label>
-          <Input
+          <UrlOrFileInput
             value={drivingVideoUrl}
-            onChange={(e) => setDrivingVideoUrl(e.target.value)}
-            placeholder="https://... (mp4 of the motion you want transferred)"
-            className="h-9 text-xs font-mono"
+            onChange={setDrivingVideoUrl}
+            accept="video/*"
+            placeholder="https://... or use Upload (mp4 ≤ 100 MB)"
           />
           <p className="text-[10px] text-muted-foreground">
-            The motion / pose / expression timeline to transfer onto the reference. Output dimensions
-            and fps follow the controls below; the worker rescales the driving frames to match.
+            The motion / pose / expression timeline to transfer onto the reference. Worker rescales
+            driving frames to match the output dimensions / fps below.
           </p>
         </div>
       )}
