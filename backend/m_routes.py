@@ -12,7 +12,10 @@ and independent of the block-based pipeline.
 
 from __future__ import annotations
 
+import copy
+import json
 import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -846,6 +849,167 @@ def build_wan_i2v_workflow(
     return wf
 
 
+# ============================================================
+# Wan 2.2 Animate (Kijai WanVideoWrapper flavor)
+# ============================================================
+
+WAN_ANIMATE_TEMPLATE_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "custom_blocks"
+    / "wan_animate"
+    / "workflow_template.json"
+)
+
+# Default negative prompt used by the Kijai example workflow. Chinese
+# "ugly list" — most users don't override this.
+WAN_ANIMATE_NEGATIVE_DEFAULT = (
+    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，"
+    "静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，"
+    "多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，"
+    "形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，"
+    "背景人很多，倒着走"
+)
+
+# Well-known node IDs in workflow_template.json that the patcher writes
+# into. Pinned here so a future template regeneration that shifts ids
+# trips the pytest fixtures rather than silently mis-patching at runtime.
+_WAN_ANIMATE_NODE_IDS = {
+    "model_loader":       "22",   # WanVideoModelLoader
+    "sampler":            "27",   # WanVideoSampler
+    "decode":             "28",   # WanVideoDecode
+    "vae_loader":         "38",   # WanVideoVAELoader
+    "ref_image":          "57",   # LoadImage (reference still)
+    "animate_embeds":     "62",   # WanVideoAnimateEmbeds
+    "driving_video":      "63",   # VHS_LoadVideo (motion driver)
+    "text_encode":        "65",   # WanVideoTextEncodeCached
+    "clip_vision_loader": "71",   # CLIPVisionLoader
+    "context_options":    "110",  # WanVideoContextOptions
+    "video_combine_main": "30",   # VHS_VideoCombine (audio-muxed final)
+    "lora_select":        "171",  # WanVideoLoraSelectMulti
+}
+
+
+def _load_wan_animate_template() -> dict[str, Any]:
+    """Load the API-format Wan Animate template, deep-copied so callers can mutate."""
+    raw = WAN_ANIMATE_TEMPLATE_PATH.read_text(encoding="utf-8")
+    return json.loads(raw)
+
+
+def build_wan_animate_workflow(
+    prompt: str,
+    image_filename: str,
+    video_filename: str,
+    width: int = 832,
+    height: int = 480,
+    num_frames: int = 81,
+    fps: int = 16,
+    steps: int = 6,
+    cfg: float = 5.0,
+    shift: float = 1.0,
+    seed: int | None = None,
+    scheduler: str = "dpm++_sde",
+    negative: str | None = None,
+    pose_strength: float = 1.0,
+    face_strength: float = 1.0,
+    colormatch: str = "disabled",
+    frame_window_size: int = 77,
+    denoise_strength: float = 1.0,
+    high_loras: list[dict[str, Any]] | None = None,
+    low_loras: list[dict[str, Any]] | None = None,
+    keep_default_acceleration_loras: bool = True,
+    filename_prefix: str = "WanAnimate",
+) -> dict[str, Any]:
+    """Build a Wan 2.2 Animate (Kijai) API workflow patched with user values.
+
+    The Kijai canvas has been pre-converted to API format and shipped as
+    ``custom_blocks/wan_animate/workflow_template.json`` (33 active nodes,
+    SAM 2 mask + face crop chain + BlockSwap + ContextOptions all
+    preserved). This function deep-copies the template and overrides the
+    well-known nodes listed in ``_WAN_ANIMATE_NODE_IDS``.
+
+    LoRA handling:
+      The template's ``WanVideoLoraSelectMulti`` (node 171) ships with
+      slots 0-1 filled by the recommended ``WanAnimate_relight`` LoRA
+      (strength 1.0) and the ``lightx2v`` speed-distillation LoRA
+      (strength 1.2). Slots 2-4 are empty. User-supplied ``high_loras``
+      / ``low_loras`` (Wan Animate is single-pass — they're concatenated)
+      go into slots 2 onwards. Pass
+      ``keep_default_acceleration_loras=False`` to wipe the defaults
+      first; in that case ``steps`` should be raised to ~25-30.
+    """
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
+    neg = negative if negative is not None else WAN_ANIMATE_NEGATIVE_DEFAULT
+
+    wf = _load_wan_animate_template()
+    nid = _WAN_ANIMATE_NODE_IDS
+
+    # --- Reference image + driving video ---
+    wf[nid["ref_image"]]["inputs"]["image"] = image_filename
+    wf[nid["driving_video"]]["inputs"]["video"] = video_filename
+    wf[nid["driving_video"]]["inputs"]["force_rate"] = int(fps)
+
+    # --- Text prompts ---
+    wf[nid["text_encode"]]["inputs"]["positive_prompt"] = prompt
+    wf[nid["text_encode"]]["inputs"]["negative_prompt"] = neg
+
+    # --- Animate embeds (resolution + length) ---
+    embeds = wf[nid["animate_embeds"]]["inputs"]
+    # The canvas wires width/height/num_frames from INTConstant nodes that
+    # we drop during canvas->API conversion, so we have to fill literal
+    # values here.
+    embeds["width"] = int(width)
+    embeds["height"] = int(height)
+    embeds["num_frames"] = int(num_frames)
+    embeds["frame_window_size"] = int(frame_window_size)
+    embeds["pose_strength"] = float(pose_strength)
+    embeds["face_strength"] = float(face_strength)
+    embeds["colormatch"] = str(colormatch)
+    # The driving-video resolution refs (canvas had VHS_LoadVideo's
+    # custom_width/height linked to INTConstants too) — pin them to
+    # match the requested output dimensions.
+    wf[nid["driving_video"]]["inputs"]["custom_width"] = int(width)
+    wf[nid["driving_video"]]["inputs"]["custom_height"] = int(height)
+
+    # --- Sampler (steps / cfg / shift / seed / scheduler) ---
+    sampler = wf[nid["sampler"]]["inputs"]
+    sampler["steps"] = int(steps)
+    sampler["cfg"] = float(cfg)
+    sampler["shift"] = float(shift)
+    sampler["seed"] = int(seed)
+    sampler["scheduler"] = str(scheduler)
+    sampler["denoise_strength"] = float(denoise_strength)
+
+    # --- Output naming ---
+    wf[nid["video_combine_main"]]["inputs"]["filename_prefix"] = filename_prefix
+    wf[nid["video_combine_main"]]["inputs"]["frame_rate"] = int(fps)
+
+    # --- LoRA chain ---
+    lora_inputs = wf[nid["lora_select"]]["inputs"]
+    if not keep_default_acceleration_loras:
+        for i in range(5):
+            lora_inputs[f"lora_{i}"] = "none"
+            lora_inputs[f"strength_{i}"] = 1.0
+
+    # Wan Animate is single-pass; concatenate high/low picks.
+    user_picks: list[dict[str, Any]] = []
+    user_picks.extend(high_loras or [])
+    user_picks.extend(low_loras or [])
+    next_slot = 2 if keep_default_acceleration_loras else 0
+    for pick in user_picks:
+        if next_slot > 4:
+            break  # 5-slot WanVideoLoraSelectMulti — drop overflow
+        name = pick.get("name") or ""
+        if not name or name == "__none__":
+            continue
+        strength = float(pick.get("strength", 1.0))
+        lora_inputs[f"lora_{next_slot}"] = name
+        lora_inputs[f"strength_{next_slot}"] = strength
+        next_slot += 1
+
+    return wf
+
+
 def build_illustrious_workflow(
     prompt: str,
     width: int = 1024,
@@ -1301,9 +1465,54 @@ async def m_generate(request: Request) -> JSONResponse:
                 "field": "image",
             }
         }
+    elif model == "wan_animate":
+        image_url = str(payload.get("image_url") or "").strip()
+        video_url = str(payload.get("video_url") or "").strip()
+        if not image_url:
+            return JSONResponse(
+                {"ok": False, "error": "image_url (reference image) is required for wan_animate"},
+                status_code=400,
+            )
+        if not video_url:
+            return JSONResponse(
+                {"ok": False, "error": "video_url (driving video) is required for wan_animate"},
+                status_code=400,
+            )
+        # Defaults: 832x480 portrait, ~5-sec clip @ 16 fps, lightx2v 6 steps.
+        width = int(payload.get("width") or 832)
+        height = int(payload.get("height") or 480)
+        num_frames = int(payload.get("length") or payload.get("num_frames") or 81)
+        fps = int(payload.get("fps") or 16)
+        steps = int(payload.get("steps") or 6)
+        cfg = float(payload.get("cfg") or 5.0)
+        shift = float(payload.get("shift") or 1.0)
+        scheduler = str(payload.get("scheduler") or "dpm++_sde")
+        negative = payload.get("negative")  # None -> builder default (Chinese ugly list)
+        # Filenames the worker will download both inputs into.
+        image_filename = "m_wan_animate_ref.png"
+        video_filename = "m_wan_animate_drive.mp4"
+        workflow = build_wan_animate_workflow(
+            prompt=prompt, image_filename=image_filename, video_filename=video_filename,
+            width=width, height=height, num_frames=num_frames, fps=fps,
+            steps=steps, cfg=cfg, shift=shift, seed=seed,
+            scheduler=scheduler, negative=negative,
+            high_loras=high_loras, low_loras=low_loras,
+        )
+        file_inputs = {
+            "57": {
+                "url": image_url,
+                "filename": image_filename,
+                "field": "image",
+            },
+            "63": {
+                "url": video_url,
+                "filename": video_filename,
+                "field": "video",
+            },
+        }
     else:
         return JSONResponse(
-            {"ok": False, "error": f"unsupported model: {model} (use 'z_image', 'illustrious', or 'wan_i2v')"},
+            {"ok": False, "error": f"unsupported model: {model} (use 'z_image', 'illustrious', 'wan_i2v', or 'wan_animate')"},
             status_code=400,
         )
 

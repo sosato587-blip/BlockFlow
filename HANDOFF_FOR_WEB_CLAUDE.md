@@ -45,9 +45,10 @@
 | `b743302` | feat(catalog): Wan 2.2 Animate 14B + Nova 3DCG XL v9.0 を `KNOWN_CHECKPOINTS` 登録、`COST_RATES` に `wan_animate` / `wan_fun_control` / `ltx_video` 追加（テスト 12 ケース）|
 | `9be0955` → `218306c` | One Piece キャラ LoRA DL 用 `scripts/dl_onepiece_loras.py`（dedup 比較 + 一発 RunPod 投入）。途中で worker 側の civitai DL バグ判明、blocker doc 化 |
 | `fe23625` | docs: civitai DL blocker は `satoso2/comfyui-serverless:v11-curl-wrapper` で解消（ai-creator-stack の curl shim、Hearmeman の Python 無修正）。6/6 LoRA 着地確認済み |
-| _wan_animate scaffolding_ | `custom_blocks/wan_animate/` 新設（canvas JSON asset + 設計 doc + stub backend / frontend block）。catalog の Wan Animate 行を Kijai workflow の filename に合わせて修正、relight LoRA + lightx2v acceleration LoRA を追加登録。**runtime 未実装（converter / builder / dispatcher / UI は次セッション）**。詳細: `custom_blocks/wan_animate/WAN_ANIMATE_DESIGN.md` |
+| _wan_animate scaffolding_ | `custom_blocks/wan_animate/` 新設（canvas JSON asset + 設計 doc + stub backend / frontend block）。catalog の Wan Animate 行を Kijai workflow の filename に合わせて修正、relight LoRA + lightx2v acceleration LoRA を追加登録。詳細: `custom_blocks/wan_animate/WAN_ANIMATE_DESIGN.md` |
+| _wan_animate runtime_ | フル実装。`scripts/convert_canvas_to_api.py`（66 ノード canvas → 33 ノード API 形式の変換器、SetNode/GetNode/Reroute alias 解決 + INPUT_TYPES 自動引き当て） / `custom_blocks/wan_animate/workflow_template.json`（生成済み API テンプレ） / `m_routes.build_wan_animate_workflow`（テンプレ patcher、user 値を well-known node id に注入、デフォルトで relight + lightx2v 加速 LoRA を保持しつつ user LoRA を slot 2 から追加） / `/api/m/wan_animate` dispatcher（image + video の file_inputs） / mobile UI 拡張（`ModelKind` に `wan_animate` 追加、driving video URL 入力欄、length/fps コントロール共有） / desktop ブロック（`wan_fun_control` パターン縮小版で /run + /status、registerExecute + serverless poller 連携）。テスト: 28 ケース pytest（テンプレ整合性 + 全 user-tunable 入力の patch 確認 + LoRA chain + idempotency）。実走未確認（次セッションで `~$0.30` の smoke test 推奨）|
 
-**テスト**: pytest 39/39（`test_lora_mapping`, `test_m_routes_loras`, `test_cost_rates`）/ vitest `lora-mapping.test.ts` 13/13。
+**テスト**: pytest 67/67（`test_lora_mapping`, `test_m_routes_loras`, `test_cost_rates`, `test_wan_animate_workflow`）/ vitest `lora-mapping.test.ts` 13/13。
 
 ### 過去（main に push 済み・参考）
 | Commit | 内容 |

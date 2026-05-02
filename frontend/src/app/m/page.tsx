@@ -1573,7 +1573,7 @@ function SchedulesTab() {
 // Generate Tab — quick image generation (mobile-first form)
 // ============================================================
 
-type ModelKind = 'z_image' | 'illustrious' | 'wan_i2v'
+type ModelKind = 'z_image' | 'illustrious' | 'wan_i2v' | 'wan_animate'
 
 interface InventoryFile {
   filename: string
@@ -1644,6 +1644,11 @@ const PROMPT_PRESETS: Record<ModelKind, { label: string; text: string }[]> = {
     { label: 'Hair wind', text: 'hair flowing in wind, fabric fluttering, looking out at horizon, cinematic, smooth motion' },
     { label: 'Smile blink', text: 'gentle smile, blinking softly, slight head tilt, very subtle motion' },
   ],
+  wan_animate: [
+    { label: 'Dance follow', text: 'character dancing, smooth full-body motion, soft 3D render style, cinematic lighting' },
+    { label: 'Identity-preserving talk', text: 'character speaking, natural lip-sync, expressive face, studio lighting' },
+    { label: 'Anime motion transfer', text: 'anime character performing the driving motion, smooth animation, vibrant colors' },
+  ],
 }
 
 function GenerateTab() {
@@ -1658,8 +1663,13 @@ function GenerateTab() {
   const [highLoras, setHighLoras] = useState<LoraPick[]>([])
   const [lowLoras, setLowLoras] = useState<LoraPick[]>([])
   const [loraOptions, setLoraOptions] = useState<string[]>([])
-  // Wan I2V specific
+  // Wan I2V / Wan Animate specific. Both feed into the same imageUrl
+  // state for the reference / start image; Wan Animate also needs a
+  // separate driving video URL. Named ``drivingVideoUrl`` to avoid
+  // colliding with the locally-derived ``videoUrl`` near the bottom of
+  // GenerateTab that points at the JOB OUTPUT's first video URL.
   const [imageUrl, setImageUrl] = useState('')
+  const [drivingVideoUrl, setDrivingVideoUrl] = useState('')
   const [length, setLength] = useState(33)
   const [fps, setFps] = useState(16)
   // Endpoint ID (mirrors PC's Endpoint ID field)
@@ -1962,6 +1972,18 @@ function GenerateTab() {
       setCfg(3.5)
       setSamplerName('euler')
       setScheduler('simple')
+    } else if (m === 'wan_animate') {
+      // Kijai Wan Animate single-pass + lightx2v acceleration LoRA.
+      // 6 steps is enough at this configuration; users who disable
+      // the lightx2v default in advanced mode should bump back to 25-30.
+      setWidth(832)
+      setHeight(480)
+      setSteps(6)
+      setCfg(5.0)
+      setSamplerName('dpm++_sde')
+      setScheduler('simple')
+      setLength(81)
+      setFps(16)
     }
   }
 
@@ -2041,6 +2063,20 @@ function GenerateTab() {
       setLooping(false)
       return
     }
+    if (model === 'wan_animate') {
+      if (!imageUrl.trim()) {
+        setError('Reference image URL is required for Wan Animate')
+        loopActiveRef.current = false
+        setLooping(false)
+        return
+      }
+      if (!drivingVideoUrl.trim()) {
+        setError('Driving video URL is required for Wan Animate')
+        loopActiveRef.current = false
+        setLooping(false)
+        return
+      }
+    }
     setError(null)
     setSubmitting(true)
     setJob(null)
@@ -2071,6 +2107,13 @@ function GenerateTab() {
         body.image_url = imageUrl.trim()
         body.length = length
         body.fps = fps
+      }
+      if (model === 'wan_animate') {
+        body.image_url = imageUrl.trim()
+        body.video_url = drivingVideoUrl.trim()
+        body.length = length
+        body.fps = fps
+        body.shift = 1.0
       }
 
       // Routing: ControlNet / Chara IP / normal (priority: Chara IP → ControlNet → normal)
@@ -2361,7 +2404,7 @@ function GenerateTab() {
   const outputUrl = job?.output?.url ? String(job.output.url) : null
   const outputVideos = (job?.output?.videos as Array<{ url?: string }> | undefined) || []
   const videoUrl = outputVideos.length > 0 ? outputVideos[0].url : null
-  const isVideoOutput = model === 'wan_i2v' || !!videoUrl
+  const isVideoOutput = model === 'wan_i2v' || model === 'wan_animate' || !!videoUrl
   const finalOutputUrl = videoUrl || outputUrl
 
   const selectedPreset = presets.find((p) => p.id === selectedPresetId)
@@ -2490,6 +2533,7 @@ function GenerateTab() {
             <SelectItem value="z_image">Z-Image Turbo (Real, fast)</SelectItem>
             <SelectItem value="illustrious">Illustrious XL (Anime)</SelectItem>
             <SelectItem value="wan_i2v">Wan 2.2 I2V (Image → Video, 5-10 min)</SelectItem>
+            <SelectItem value="wan_animate">Wan 2.2 Animate (Image + Driving Video → Video, 5-10 min)</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -2545,11 +2589,12 @@ function GenerateTab() {
         )}
       </div>
 
-      {/* Image URL input (only for Wan I2V) */}
-      {model === 'wan_i2v' && (
+      {/* Image URL input (Wan I2V + Wan Animate) */}
+      {(model === 'wan_i2v' || model === 'wan_animate') && (
         <div className="space-y-1.5">
           <label className="text-xs font-medium text-muted-foreground">
-            Input Image URL <span className="text-orange-400">*</span>
+            {model === 'wan_animate' ? 'Reference Image URL' : 'Input Image URL'}
+            <span className="text-orange-400"> *</span>
           </label>
           <Input
             value={imageUrl}
@@ -2558,7 +2603,28 @@ function GenerateTab() {
             className="h-9 text-xs font-mono"
           />
           <p className="text-[10px] text-muted-foreground">
-            Tip: Generate an image first (Z-Image / Illustrious), then paste its URL here
+            {model === 'wan_animate'
+              ? 'Single still of the character whose identity should be preserved across the driving video.'
+              : 'Tip: Generate an image first (Z-Image / Illustrious), then paste its URL here'}
+          </p>
+        </div>
+      )}
+
+      {/* Driving video URL input (Wan Animate only) */}
+      {model === 'wan_animate' && (
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">
+            Driving Video URL <span className="text-orange-400">*</span>
+          </label>
+          <Input
+            value={drivingVideoUrl}
+            onChange={(e) => setDrivingVideoUrl(e.target.value)}
+            placeholder="https://... (mp4 of the motion you want transferred)"
+            className="h-9 text-xs font-mono"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            The motion / pose / expression timeline to transfer onto the reference. Output dimensions
+            and fps follow the controls below; the worker rescales the driving frames to match.
           </p>
         </div>
       )}
@@ -2671,7 +2737,7 @@ function GenerateTab() {
       </div>
 
       {/* Wan I2V specific: length + fps */}
-      {model === 'wan_i2v' && (
+      {(model === 'wan_i2v' || model === 'wan_animate') && (
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
             <label className="text-[10px] font-medium text-muted-foreground">Frames</label>
@@ -2684,7 +2750,9 @@ function GenerateTab() {
               max={161}
               step={4}
             />
-            <p className="text-[9px] text-muted-foreground">33 frames @ 16fps ≈ 2 sec</p>
+            <p className="text-[9px] text-muted-foreground">
+              {model === 'wan_animate' ? '81 frames @ 16fps ≈ 5 sec' : '33 frames @ 16fps ≈ 2 sec'}
+            </p>
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-medium text-muted-foreground">FPS</label>
