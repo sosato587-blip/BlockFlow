@@ -213,7 +213,9 @@ def known_checkpoints_by_family() -> dict[str, list[CheckpointInfo]]:
 # Explicit overrides for LoRAs whose filenames lack architecture hints.
 # Key is the lowercased base filename (without directory). Value is a family id.
 # Keep this list short — prefer renaming the LoRA to include an architecture
-# hint when possible. This map exists for historical names we can't rename.
+# hint when possible, or broadening _LORA_PATTERNS below if a pattern is
+# generalisable. This map exists for historical names we can't rename and
+# for one-off filenames the regex would not safely catch.
 _LORA_OVERRIDES: dict[str, str] = {
     # Illustrious NSFW utility/concept LoRAs (used in sexy_12 / nami batches)
     "smooth_detailer_booster.safetensors": "illustrious",
@@ -226,18 +228,52 @@ _LORA_OVERRIDES: dict[str, str] = {
     # Z-Image realistic-style LoRAs
     "nicegirls_ultrareal.safetensors": "z_image",
     "realistic_skin_texture.safetensors": "z_image",
+    # 2026-05-03: One Piece character set whose filenames lack any
+    # architecture marker the regex can grab on to.
+    "boa_hancock.safetensors": "illustrious",
+    "nicorobin_onepiece[nyx].safetensors": "illustrious",
+    "one_piece_manga_style.safetensors": "illustrious",
+    # 2026-05-03: Generic-named Illustrious concept / style / quality LoRAs
+    # that the user confirmed are SDXL Illustrious.
+    "hotspring.safetensors": "illustrious",
+    "kodak film style v1.safetensors": "illustrious",
+    "schoolgirl.safetensors": "illustrious",
+    "smooth_booster_v4.safetensors": "illustrious",
+    "trendcraft_the_peoples_style_detailer-v2.3i-4_15_2025-sdxl.safetensors": "illustrious",
+    "dynamicposeil2att_alpha1.0_rank4_noxattn_900steps.safetensors": "illustrious",
+    # 2026-05-03: Z-Image Turbo LoRAs whose names embed "ZIT" without a
+    # word-boundary the regex can find.
+    "microbikiniv2zitde.safetensors": "z_image",
+    "zitnsfwlora.safetensors": "z_image",
 }
 
 
 # Order matters: more specific patterns first. The first match wins.
-# Each entry: (compiled regex over the lowercased filename, family id)
+# Each entry: (compiled regex over the lowercased filename, family id).
+#
+# 2026-05-03 audit: walked the on-disk LoRA inventory through classify_lora()
+# and found 22/48 unclassified — i.e. invisible in the family-filtered UI.
+# Patterns below were widened to cover the abbreviation forms commonly used
+# in community LoRAs (_ilxl_, _ixl_, IL-NOOB, IL2att, illusXL, ZIT*,
+# WanAnimate / WanRelight / lightx2v). Anything still not caught by these
+# patterns goes into _LORA_OVERRIDES above.
 _LORA_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    # Illustrious-specific hints
-    (re.compile(r"illustrious|illuxl|_il\.|_illu[_\.]"), "illustrious"),
-    # Z-Image hints
-    (re.compile(r"z_image|z-image|zimage|turbo(?!_1\.0_fp16)"), "z_image"),
-    # Wan 2.2 video hints
-    (re.compile(r"wan[_\.]?2\.?2|wan22|wan_i2v|wan_t2v|wan_fun"), "wan_22"),
+    # Illustrious. Catches:
+    #   * the full word "illustrious"
+    #   * the abbreviations "illuxl" and "illusXL" (typo'd by some uploaders)
+    #   * a word-boundary "il" optionally followed by "xl" or a digit, then
+    #     a separator: e.g. _ilxl_v1, _il., -il-20, magical-girl-outfit-il-20
+    #   * a word-boundary "ixl" with separator: e.g. PeronaOnePieceAnime_IXL
+    #   * "il-noob" / "il_noob" — IL-NOOB (NoobAI) based merges
+    (re.compile(r"illustrious|illusxl|illuxl|(?:^|[_\.\- ])il(?:xl|\d)?[_\.\-]|(?:^|[_\.\- ])ixl[_\.\-]|il[_\-]noob"), "illustrious"),
+    # Z-Image. Explicit name forms + ZIT-prefixed variants (ZITnsfwLoRA,
+    # MicroBikiniV2ZiTde) + standalone "turbo" (with a negative lookahead
+    # to exempt the legacy sd_xl_turbo_1.0_fp16 filename).
+    (re.compile(r"z_image|z-image|zimage|zit(?:nsfw|tde|[_\.\-])|turbo(?!_1\.0_fp16)"), "z_image"),
+    # Wan 2.2 video. Catches the version forms plus the Animate / Relight
+    # extras and the lightx2v step-distill accelerator that ships against
+    # the same checkpoints.
+    (re.compile(r"wan[_\.]?2\.?2|wan22|wan_i2v|wan_t2v|wan_fun|wan[_\.\-]?animate|wan[_\.\-]?relight|lightx2v"), "wan_22"),
     # LTX
     (re.compile(r"\bltx\b|ltx[_-]video|ltxv"), "ltx"),
 ]
