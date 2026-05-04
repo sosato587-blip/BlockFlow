@@ -1,0 +1,172 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "waiIllustriousSDXL_v170.safetensors"
+    }
+  },
+  "1001": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "1",
+        1
+      ],
+      "lora_name": "aesthetic_quality_masterpiece.safetensors",
+      "strength_model": 1.0,
+      "strength_clip": 1.0
+    }
+  },
+  "1002": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "model": [
+        "1001",
+        0
+      ],
+      "clip": [
+        "1001",
+        1
+      ],
+      "lora_name": "smooth_detailer_booster.safetensors",
+      "strength_model": 0.8,
+      "strength_clip": 0.8
+    }
+  },
+  "1003": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "model": [
+        "1002",
+        0
+      ],
+      "clip": [
+        "1002",
+        1
+      ],
+      "lora_name": "hentai_quality_studio_illustrious.safetensors",
+      "strength_model": 0.8,
+      "strength_clip": 0.8
+    }
+  },
+  "1004": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "model": [
+        "1003",
+        0
+      ],
+      "clip": [
+        "1003",
+        1
+      ],
+      "lora_name": "HinataHyuga_IllustriousXL.safetensors",
+      "strength_model": 1.0,
+      "strength_clip": 1.0
+    }
+  },
+  "1005": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "model": [
+        "1004",
+        0
+      ],
+      "clip": [
+        "1004",
+        1
+      ],
+      "lora_name": "StS-Illustrious-Detail-Slider-v1.0.safetensors",
+      "strength_model": 0.5,
+      "strength_clip": 0.5
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1536,
+      "batch_size": 1
+    }
+  },
+  "10": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "1005",
+        1
+      ],
+      "text": "masterpiece, best quality, very aesthetic, 1girl, beautiful detailed eyes"
+    }
+  },
+  "11": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "1005",
+        1
+      ],
+      "text": "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, ugly"
+    }
+  },
+  "6": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "1005",
+        0
+      ],
+      "positive": [
+        "10",
+        0
+      ],
+      "negative": [
+        "11",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ],
+      "seed": 0,
+      "steps": 30,
+      "cfg": 7.0,
+      "sampler_name": "dpmpp_2m_sde_gpu",
+      "scheduler": "karras",
+      "denoise": 1.0
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "sdxl_vae.safetensors"
+    }
+  },
+  "7": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "6",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "7",
+        0
+      ],
+      "filename_prefix": "IL_base"
+    }
+  }
+}
