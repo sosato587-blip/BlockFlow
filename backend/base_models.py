@@ -90,10 +90,20 @@ class CheckpointInfo:
 
 KNOWN_CHECKPOINTS: list[CheckpointInfo] = [
     CheckpointInfo(
-        filename="waiIllustriousSDXL_v160.safetensors",
+        filename="waiIllustriousSDXL_v170.safetensors",
         family="illustrious",
-        label="WAI Illustrious XL v1.6.0",
-        notes="Main anime checkpoint. 6.6GB, SDXL arch.",
+        label="WAI Illustrious XL v1.7.0",
+        notes=(
+            "Main anime checkpoint. 6.6GB, SDXL arch. v17.0 over v16.0: "
+            "background-character color/relevance fixes, smoother coloring, "
+            "and notably better Hires-fix limb correction (arms/legs/hands). "
+            "Lower step count works (recommended 15-30 vs 25-40 in v16), "
+            "so per-image RunPod cost drops. Default character age tends "
+            "younger; for adult-look without a character LoRA, prepend "
+            "(aged up:1.0-2.0) or (mature female:1.0-2.0) to the prompt. "
+            "All Illustrious LoRAs trained against v16 still work unchanged. "
+            "Source: https://civitai.com/models/827184 (modelVersionId=2883731)."
+        ),
     ),
     CheckpointInfo(
         filename="nova3DCGXL_illustriousV90.safetensors",
