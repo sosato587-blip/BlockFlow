@@ -479,10 +479,17 @@ function ComfyGenBlock({
   const [refVideo, setRefVideo] = useSessionState<RefVideoInfo[]>(`block_${blockId}_ref_video`, [])
   const [refVideoOverrides, setRefVideoOverrides] = useSessionState<Record<string, string>>(`block_${blockId}_ref_video_overrides`, {})
   const [loraNodes, setLoraNodes] = useSessionState<LoraNodeInfo[]>(`block_${blockId}_lora_nodes`, [])
-  // Per-node LoRA overrides state is kept (read-only now) because run-time
-  // injection + automation code still looks up `loraOverrides[ln.node_id]?.*`.
-  // The UI that used to mutate this was removed 2026-04-23.
-  const [loraOverrides] = useSessionState<Record<string, LoraOverride>>(`block_${blockId}_lora_overrides`, {})
+  // Per-node LoRA overrides. The UI that used to mutate this was removed
+  // 2026-04-23, but parseWorkflow / its reparse path STILL writes here
+  // (initializing entries from detected LoRA loader nodes), and run-time
+  // injection + automation code reads `loraOverrides[ln.node_id]?.*` to
+  // resolve the effective LoRA name and strength per node. The setter must
+  // therefore stay exposed even though no current UI calls it directly.
+  // Removing the setter while keeping the writes was the proximate cause
+  // of all the "section disappeared" reports on 2026-05-04 — the throw
+  // crashed parseWorkflow before any of the other state setters
+  // (resolutionNodes / ksamplers / loraNodes / textOverrides) ran.
+  const [loraOverrides, setLoraOverrides] = useSessionState<Record<string, LoraOverride>>(`block_${blockId}_lora_overrides`, {})
   const [availableLoras, setAvailableLoras] = useState<string[]>([])
   const [availableSamplers, setAvailableSamplers] = useState<string[]>([])
   const [availableSchedulers, setAvailableSchedulers] = useState<string[]>([])
