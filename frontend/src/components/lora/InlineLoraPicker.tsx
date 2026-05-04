@@ -87,7 +87,10 @@ export interface InlineLoraPickerProps {
 
   /** Max picks per branch (default 8). */
   maxPicksPerBranch?: number
-  strengthMin?: number // default 0
+  // Slider LoRAs (e.g. StS-Detail-Slider, body sliders) work in negative
+  // strength to flip their effect. Default range -1.5..2 covers both
+  // standard LoRAs (0..2) and bidirectional sliders (-1.5..1.5).
+  strengthMin?: number // default -1.5
   strengthMax?: number // default 2
   strengthStep?: number // default 0.05
 
@@ -129,7 +132,7 @@ export function InlineLoraPicker(props: InlineLoraPickerProps): React.ReactEleme
     onHighPicksChange,
     onLowPicksChange,
     maxPicksPerBranch = 8,
-    strengthMin = 0,
+    strengthMin = -1.5,
     strengthMax = 2,
     strengthStep = 0.05,
     disabled = false,
