@@ -80,45 +80,56 @@ different shape will crash the override builder downstream.
 ## ComfyGen — Prompt UI
 
 **Owner files**:
-- `custom_blocks/comfy_gen/frontend.block.tsx` — lines ~2084-2200 render
-  the textareas; lines ~1521-1525 compute `visibleTextOverrides` and
-  apply the negative-prompt filter
+- `custom_blocks/comfy_gen/frontend.block.tsx` — lines ~1519-1580
+  derive the slots; lines ~2127-2300 render
+- `frontend/src/lib/comfygen-overrides.ts` — `buildOverrides()` consumes
+  the `textOverrides` array at submit time
 
-**Current design**: the prompt UI is **workflow-driven**. Each
-`CLIPTextEncode.text` input detected by `parse-workflow` becomes one
-textarea. Per ADR 0001:
+**Current design** (ADR 0002, accepted 2026-05-03):
 
 ```
-parse-workflow  →  text_overrides[]  →  one Textarea per entry
-0 detected      →  0 Textareas       →  no prompt UI shown
+                  parse-workflow → text_overrides[]
+                            │
+                            ▼
+       ┌──────────── slot derivation ────────────┐
+       │                                         │
+       ▼                                         ▼
+  primaryPositive        primaryNegative        extraTextOverrides
+  (first non-neg)        (first negative)       (everything else)
+       │                                         │
+       ▼                                         ▼
+  positive Textarea      negative Textarea      Advanced collapsible
+  ALWAYS visible         ALWAYS visible         (visible only if extras)
 ```
 
-**Known UX gap**: This shape feels backwards from the user's mental
-model ("I want to write a prompt; the workflow is implementation
-detail"). The user has flagged it more than once. ADR 0002 supersedes
-this design with an "always-on" approach — read it before changing the
-prompt UI further.
+When detection returns 0 for a branch, the corresponding textarea uses a
+**synthetic key** (`__synthetic_positive__.text` / `__synthetic_negative__.text`).
+The textarea still renders; user input is persisted under the synthetic
+key in `textValues`. At submit time, `buildOverrides` only iterates real
+`textOverrides[]` entries, so synthetic keys are silently dropped — but
+the `promptDetectionGap` banner above the textareas warns the user.
 
-**`showNegativePrompts` toggle** (introduced 2026-04-XX, commit
-`f6c170e`): when off (default), `is_negative=true` overrides are
-filtered out of the rendered list. When on, they appear with a
-`(negative)` label. This was added to declutter the UI for users who
-rarely edit the negative prompt; it is **not** a fix for the 0-detected
-case.
+**`showAdvancedPrompts` toggle**: same session-state key as the legacy
+`showNegativePrompts` flag (`block_<id>_show_negative_prompts`), but the
+UI label and behaviour changed in ADR 0002. It now controls visibility
+of the **Advanced — per-node prompts** collapsible (visible only when
+`extraTextOverrides.length > 0`). Negative prompts are **always**
+visible regardless of this toggle.
 
 **DO NOT**:
-- Drop the `showNegativePrompts` state without a migration — existing
-  user session state references the key. See ADR 0002 for the
-  migration approach.
+- Rename or delete the `block_<id>_show_negative_prompts` session-state
+  key without a migration — existing users have it set.
+- Hide the positive or negative textarea behind a toggle / collapsible.
+  The whole point of ADR 0002 is that they are unconditional.
 - Move text-override rendering inside a `CollapsibleSection` whose
-  default state is collapsed. The user already loses the prompt when it
-  doesn't render; hiding it inside a collapsed section makes it worse.
+  default state is collapsed.
 
 **Safe extension path**:
-- ADR 0002 (always-on prompt) is the agreed forward direction. Implement
-  by adding an *implicit* fallback override when the parser returns 0
-  text fields, so the existing render loop "just works" with one
-  always-present positive entry.
+- More than 2 detected nodes → adjust the slot heuristic if the
+  current "first positive / first negative" rule mis-routes for a new
+  workflow shape. Update ADR 0002 if the heuristic changes.
+- Per-node UI tweaks (label format, upstream binding) → edit the
+  `renderTextField` closure in `frontend.block.tsx`.
 
 ---
 

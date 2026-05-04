@@ -1,6 +1,6 @@
 # ADR 0002: Always-on prompt fields with workflow detection as fallback
 
-- **Status**: Proposed (2026-05-03)
+- **Status**: Accepted (2026-05-03, implemented same day)
 - **Date**: 2026-05-03
 - **Authors**: Desktop Claude + user discussion
 - **Supersedes**: [ADR 0001](0001-workflow-driven-prompt-ui.md)

@@ -52,4 +52,4 @@ What we rejected and why.
 | ADR | Status | Topic |
 |---|---|---|
 | [0001](0001-workflow-driven-prompt-ui.md) | Superseded by 0002 | Prompt UI is workflow-driven (CLIPTextEncode → textareas) |
-| [0002](0002-always-on-prompt-fields.md) | Proposed | Always-on prompt fields with workflow-detected nodes as fallback |
+| [0002](0002-always-on-prompt-fields.md) | Accepted | Always-on prompt fields with workflow-detected nodes as fallback |

@@ -1516,18 +1516,60 @@ function ComfyGenBlock({
     })
   })
 
-  // Group text overrides by their label (node title) for collapsible sections.
-  // Negative entries are filtered out unless the user opts in via the toggle.
-  const hasNegativeTextOverrides = textOverrides.some((to) => to.is_negative)
-  const visibleTextOverrides = showNegativePrompts
-    ? textOverrides
-    : textOverrides.filter((to) => !to.is_negative)
-  const textOverrideGroups = visibleTextOverrides.reduce<Record<string, TextOverrideInfo[]>>((acc, to) => {
-    const groupKey = to.label
-    if (!acc[groupKey]) acc[groupKey] = []
-    acc[groupKey].push(to)
-    return acc
-  }, {})
+  // ADR 0002 (always-on prompt fields): the Prompt UI renders one positive
+  // textarea and one negative textarea unconditionally, regardless of how
+  // many `CLIPTextEncode` nodes the workflow parser detected. Detection is
+  // used to *populate* those slots; it does not gate them.
+  //
+  //   * `primaryPositive` = first non-negative detected text override, if any
+  //   * `primaryNegative` = first negative detected text override, if any
+  //   * `extraTextOverrides` = anything else (3rd+ prompt for 2-pass /
+  //     prompt-traveling workflows). Surfaced in an "Advanced — per-node
+  //     prompts" collapsible.
+  //
+  // When detection returns 0 entries, we synthesise placeholder slots so
+  // the textareas still render. Their textValues persist across reloads
+  // under synthetic keys; at submit time they have no real node id to
+  // inject into and are silently dropped by `buildOverrides` (which only
+  // iterates real `textOverrides`). The "Workflow has no text input"
+  // banner below makes that drop visible to the user.
+  const primaryPositive: TextOverrideInfo | null =
+    textOverrides.find((to) => !to.is_negative) ?? null
+  const primaryNegative: TextOverrideInfo | null =
+    textOverrides.find((to) => to.is_negative) ?? null
+  const extraTextOverrides: TextOverrideInfo[] = textOverrides.filter(
+    (to) => to !== primaryPositive && to !== primaryNegative,
+  )
+  const positiveKey: string = primaryPositive
+    ? `${primaryPositive.node_id}.${primaryPositive.input_name}`
+    : '__synthetic_positive__.text'
+  const negativeKey: string = primaryNegative
+    ? `${primaryNegative.node_id}.${primaryNegative.input_name}`
+    : '__synthetic_negative__.text'
+  const positiveSlot: TextOverrideInfo = primaryPositive ?? {
+    node_id: '__synthetic_positive__',
+    input_name: 'text',
+    current_value: '',
+    label: 'Prompt',
+    is_negative: false,
+  }
+  const negativeSlot: TextOverrideInfo = primaryNegative ?? {
+    node_id: '__synthetic_negative__',
+    input_name: 'text',
+    current_value: '',
+    label: 'Negative Prompt',
+    is_negative: true,
+  }
+  const promptDetectionGap: boolean =
+    Boolean(workflowJson.trim()) && textOverrides.length === 0
+  // Backwards-compat alias: the old `showNegativePrompts` session state
+  // key is now repurposed as "show advanced (per-node) prompts" — same
+  // boolean, same storage key, just relabelled in the UI. Existing
+  // sessions that had the toggle ON (i.e. previously displayed negative
+  // prompts) will land on "Advanced expanded by default", which is a
+  // reasonable continuity of intent.
+  const showAdvancedPrompts: boolean = showNegativePrompts
+  const setShowAdvancedPrompts: (v: boolean) => void = setShowNegativePrompts
 
   return (
     <div className="space-y-3">
@@ -2082,24 +2124,35 @@ function ComfyGenBlock({
           per-node advanced control again, restore from commit before this. */}
 
       {/* Text overrides — grouped by node label */}
-      {hasNegativeTextOverrides && (
-        <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={showNegativePrompts}
-            onChange={(e) => setShowNegativePrompts(e.target.checked)}
-            className="h-3 w-3 accent-amber-500"
-          />
-          Show negative prompts (off by default — toggle on to edit)
-        </label>
+      {/* Prompt UI — ADR 0002 (always-on prompt fields).
+          The two textareas below render unconditionally. If the parsed
+          workflow exposed positive / negative CLIPTextEncode nodes, the
+          textareas are wired to those node ids and feed the existing
+          `buildOverrides` injection path. If detection returned nothing
+          for one or both branches, the textareas use synthetic keys
+          which are persisted under `textValues` for session continuity
+          but get dropped at submit time (see the
+          `promptDetectionGap` banner that warns the user). */}
+      {promptDetectionGap && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+          <span className="font-medium">No text input detected in this workflow.</span>{' '}
+          You can still type below for the next workflow you load — but the
+          current workflow has no <code className="rounded bg-muted px-1 py-0.5 text-[10px]">CLIPTextEncode</code>
+          node, so prompts will not be applied for runs against it.
+        </div>
       )}
-      {Object.entries(textOverrideGroups).map(([groupLabel, items]) => {
-        const renderTextField = (to: TextOverrideInfo, showLabel: boolean) => {
-          const key = `${to.node_id}.${to.input_name}`
+      {(() => {
+        const renderTextField = (
+          to: TextOverrideInfo,
+          key: string,
+          opts: { showLabel: boolean; synthetic: boolean },
+        ) => {
+          const { showLabel, synthetic } = opts
           // Negative prompts are always Manual — wiring an upstream prompt
-          // into a negative branch makes no sense in practice. We override
-          // any pre-existing flag here to keep the render coherent.
-          const allowUpstream = hasUpstreamPrompt && !to.is_negative
+          // into a negative branch makes no sense in practice. Synthetic
+          // slots also can't carry an upstream binding because they have
+          // no node id to target.
+          const allowUpstream = hasUpstreamPrompt && !to.is_negative && !synthetic
           const usesUpstream = allowUpstream && Boolean(textUpstreamFlags[key])
           return (
             <div key={key} className="space-y-1">
@@ -2113,6 +2166,11 @@ function ComfyGenBlock({
                   )}
                   {to.is_negative && (
                     <span className="ml-1.5 text-[10px] text-amber-400 font-normal">(negative)</span>
+                  )}
+                  {synthetic && !promptDetectionGap && (
+                    <span className="ml-1.5 text-[10px] text-muted-foreground/70 font-normal">
+                      (no matching node — typed text won&apos;t apply to current workflow)
+                    </span>
                   )}
                 </Label>
                 {allowUpstream && (
@@ -2153,7 +2211,11 @@ function ComfyGenBlock({
                   <Textarea
                     value={textValues[key] ?? ''}
                     onChange={(e) => setTextValues((prev) => ({ ...prev, [key]: e.target.value }))}
-                    placeholder={to.current_value ? undefined : 'Enter text...'}
+                    placeholder={
+                      to.current_value
+                        ? undefined
+                        : (to.is_negative ? 'Negative prompt (optional)…' : 'Enter your prompt…')
+                    }
                     className="min-h-[60px] max-h-[120px] text-xs resize-y overflow-y-auto"
                   />
                   {/* Extra prompt textareas in automation mode */}
@@ -2194,20 +2256,53 @@ function ComfyGenBlock({
           )
         }
 
-        if (items.length === 1) {
-          return renderTextField(items[0], true)
-        }
-
         return (
-          <CollapsibleSection
-            key={groupLabel}
-            label={groupLabel}
-            badge={`${items.length} fields`}
-          >
-            {items.map((to) => renderTextField(to, false))}
-          </CollapsibleSection>
+          <>
+            {/* Always-on positive prompt textarea. */}
+            {renderTextField(positiveSlot, positiveKey, {
+              showLabel: true,
+              synthetic: !primaryPositive,
+            })}
+            {/* Always-on negative prompt textarea. */}
+            {renderTextField(negativeSlot, negativeKey, {
+              showLabel: true,
+              synthetic: !primaryNegative,
+            })}
+            {/* Advanced: per-node prompts for 2-pass / prompt-traveling
+                workflows (3rd+ detected text overrides). The same boolean
+                that used to gate "Show negative prompts" now gates this
+                section — same session-state key, just relabelled. */}
+            {extraTextOverrides.length > 0 && (
+              <>
+                <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showAdvancedPrompts}
+                    onChange={(e) => setShowAdvancedPrompts(e.target.checked)}
+                    className="h-3 w-3 accent-amber-500"
+                  />
+                  Show advanced per-node prompts ({extraTextOverrides.length} extra
+                  {extraTextOverrides.length === 1 ? ' field' : ' fields'})
+                </label>
+                {showAdvancedPrompts && (
+                  <CollapsibleSection
+                    label="Per-node prompts"
+                    badge={`${extraTextOverrides.length} field${extraTextOverrides.length === 1 ? '' : 's'}`}
+                  >
+                    {extraTextOverrides.map((to) =>
+                      renderTextField(
+                        to,
+                        `${to.node_id}.${to.input_name}`,
+                        { showLabel: true, synthetic: false },
+                      ),
+                    )}
+                  </CollapsibleSection>
+                )}
+              </>
+            )}
+          </>
         )
-      })}
+      })()}
 
       {/* Batch confirmation dialog */}
       <Dialog open={showBatchConfirm !== null} onOpenChange={(open) => {
