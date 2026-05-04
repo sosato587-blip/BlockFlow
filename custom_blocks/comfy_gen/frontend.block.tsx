@@ -976,6 +976,24 @@ function ComfyGenBlock({
 
         const detectedTextOverrides = (data.text_overrides || []) as TextOverrideInfo[]
         setTextOverrides(detectedTextOverrides)
+        // Merge default text values from the workflow's literal current_value
+        // into textValues for any keys the user hasn't typed into yet. This
+        // preserves user edits across page reload while making sure the
+        // workflow's baked-in negative-prompt default actually shows up in
+        // the textarea after a refresh. Without this merge, useSessionState
+        // would restore the previous (possibly empty) textValues on mount
+        // and the reparse here would update textOverrides but never fill
+        // textValues, leaving the negative textarea blank.
+        setTextValues((prev) => {
+          const merged: Record<string, string> = { ...prev }
+          for (const to of detectedTextOverrides) {
+            const k = `${to.node_id}.${to.input_name}`
+            if (!(k in merged) || merged[k] === '') {
+              merged[k] = to.current_value
+            }
+          }
+          return merged
+        })
 
         const detectedResNodes = (data.resolution_nodes || []) as ResolutionNodeInfo[]
         setResolutionNodes(detectedResNodes)
