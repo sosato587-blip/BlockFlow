@@ -35,8 +35,9 @@ file is the failure mode this file exists to prevent.
 ## ComfyGen — Workflow Parsing
 
 **Owner files**:
-- `custom_blocks/comfy_gen/backend.block.py` — `_detect_*` helpers, `parse-workflow` route (line ~1574)
-- `custom_blocks/comfy_gen/frontend.block.tsx` — calls `/api/blocks/comfy_gen/parse-workflow` then stores results in session state
+- `custom_blocks/comfy_gen/backend.block.py` — `_detect_*` helpers, `parse-workflow` route (line ~1574); `builtin-workflows` GET endpoints (~1574 area) for the bundled `examples/` library
+- `custom_blocks/comfy_gen/frontend.block.tsx` — `Load JSON` / `From PNG` upload handlers + the built-in workflow dropdown that calls `handleBuiltinWorkflow`. All three paths feed the same `parseWorkflow()` callback.
+- `examples/*.json` — bundled known-good workflows. Path-traversal-safe basename access only.
 
 **Source of truth**: the parsed payload returned by `parse-workflow` —
 `{load_nodes, ksamplers, text_overrides, resolution_nodes, frame_counts,

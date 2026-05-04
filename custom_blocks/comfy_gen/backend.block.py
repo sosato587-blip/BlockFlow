@@ -1571,6 +1571,108 @@ async def extract_workflow_from_png(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "workflow": workflow})
 
 
+# --- Built-in workflow library ----------------------------------------
+#
+# Workflows that ship with the BlockFlow repo under `examples/`. Surfaced
+# in the ComfyGen block UI as a dropdown so users can load a known-good
+# workflow without needing to upload a JSON from their device's local
+# filesystem (which is awkward when the user browses BlockFlow from a
+# different machine than where the file lives).
+#
+# Path traversal is prevented by `_resolve_builtin_workflow`: the requested
+# filename is reduced to its basename and the result MUST resolve to a
+# child of `examples/`.
+
+_EXAMPLES_DIR: Path = Path(__file__).resolve().parent.parent.parent / "examples"
+
+
+def _resolve_builtin_workflow(filename: str) -> Path | None:
+    """Map a user-supplied filename to a real path under `examples/`.
+
+    Returns None if the request is unsafe (traversal, absolute path,
+    not a .json file) or if the file does not exist.
+    """
+    if not filename:
+        return None
+    safe_name = os.path.basename(filename)  # strip any directory components
+    if safe_name != filename or not safe_name.endswith(".json"):
+        return None
+    candidate = (_EXAMPLES_DIR / safe_name).resolve()
+    try:
+        candidate.relative_to(_EXAMPLES_DIR.resolve())
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+@router.get("/builtin-workflows")
+def list_builtin_workflows() -> JSONResponse:
+    """List the workflow JSONs bundled under `examples/`.
+
+    Returns each entry's basename (slug for the dropdown) and a one-line
+    description pulled from a sibling `examples/README.md` table when
+    available — best-effort. The frontend doesn't depend on the
+    description; it just falls back to the basename if missing.
+    """
+    if not _EXAMPLES_DIR.is_dir():
+        return JSONResponse({"ok": True, "workflows": []})
+
+    descriptions: dict[str, str] = {}
+    readme = _EXAMPLES_DIR / "README.md"
+    if readme.is_file():
+        try:
+            for line in readme.read_text(encoding="utf-8").splitlines():
+                # Match the "| filename.json | desc | extras |" rows in the
+                # README's table-of-contents. Defensive on whitespace.
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) >= 3 and parts[1].endswith(".json"):
+                    descriptions[parts[1].strip("`")] = parts[2]
+        except Exception:
+            pass  # README is informational only
+
+    workflows: list[dict[str, str]] = []
+    for path in sorted(_EXAMPLES_DIR.glob("*.json")):
+        workflows.append({
+            "filename": path.name,
+            "description": descriptions.get(path.name, ""),
+        })
+    return JSONResponse({"ok": True, "workflows": workflows})
+
+
+@router.get("/builtin-workflows/{filename}")
+def get_builtin_workflow(filename: str) -> JSONResponse:
+    """Return the JSON content of a single bundled workflow.
+
+    Frontend feeds the response back through the same `parseWorkflow`
+    path it uses for user uploads, so the workflow shape contract is
+    identical (must be ComfyUI API format).
+    """
+    path = _resolve_builtin_workflow(filename)
+    if path is None:
+        return JSONResponse(
+            {"ok": False, "error": f"Workflow {filename!r} not found in examples/"},
+            status_code=404,
+        )
+    try:
+        content = path.read_text(encoding="utf-8")
+        # Validate it parses; the frontend will pass the parsed object
+        # through parse-workflow anyway, but failing here gives a
+        # cleaner error.
+        json.loads(content)
+    except (OSError, json.JSONDecodeError) as e:
+        return JSONResponse(
+            {"ok": False, "error": f"Failed to read {filename}: {e}"},
+            status_code=500,
+        )
+    return JSONResponse({
+        "ok": True,
+        "filename": path.name,
+        "content": content,
+    })
+
+
 @router.post("/parse-workflow")
 async def parse_workflow(request: Request) -> JSONResponse:
     """Parse a workflow JSON and return detected LoadImage/LoadVideo nodes."""

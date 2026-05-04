@@ -494,6 +494,12 @@ function ComfyGenBlock({
   const [lockSeed, setLockSeed] = useSessionState(`block_${blockId}_lock_seed`, false)
   const [progress, setProgress] = useState<ProgressInfo | null>(null)
   const [workflowError, setWorkflowError] = useState('')
+  // Built-in workflows fetched from the backend's `examples/` directory.
+  // Populated once on mount; the user picks one from a dropdown to skip
+  // the upload step entirely.
+  const [builtinWorkflows, setBuiltinWorkflows] = useState<
+    Array<{ filename: string; description: string }>
+  >([])
   const [cliMissing, setCliMissing] = useState<string | null>(null)
   // Persist dismissal of the "comfy-gen CLI not found" warning across reloads.
   // The CLI is only needed for the Sync button; the rest of the block works
@@ -635,6 +641,10 @@ function ComfyGenBlock({
       .then((r) => r.json())
       .then((d) => { if (d.ok) applyCacheData(d) })
       .catch(() => { /* ignore */ })
+    fetch('/api/blocks/comfy_gen/builtin-workflows')
+      .then((r) => r.json())
+      .then((d) => { if (d.ok && Array.isArray(d.workflows)) setBuiltinWorkflows(d.workflows) })
+      .catch(() => { /* examples/ may simply not exist; non-fatal */ })
   }, [applyCacheData])
 
   const pollRefreshStatus = useCallback(() => {
@@ -1065,6 +1075,36 @@ function ComfyGenBlock({
     const detectedType = await parseWorkflow(text)
     if (detectedType === 'image' || detectedType === 'video') {
       setOutput(detectedType, makePendingOutput(detectedType))
+    }
+  }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName])
+
+  // Built-in workflow picker — fetches a JSON bundled under examples/ from
+  // the backend and feeds it through the same parseWorkflow path that
+  // handleWorkflowFile uses for user uploads. Lets the user load a
+  // known-good workflow without needing the file on the device they're
+  // browsing from.
+  const handleBuiltinWorkflow = useCallback(async (filename: string) => {
+    if (!filename) return
+    setWorkflowError('')
+    resetRuntimeFromBlock(blockId, { preserveOutputHint: true })
+    try {
+      const res = await fetch(
+        `/api/blocks/comfy_gen/builtin-workflows/${encodeURIComponent(filename)}`,
+      )
+      const data = await res.json()
+      if (!data.ok) {
+        setWorkflowError(data.error || `Failed to load built-in workflow ${filename}`)
+        return
+      }
+      const text = data.content as string
+      setWorkflowJson(text)
+      setWorkflowName(filename)
+      const detectedType = await parseWorkflow(text)
+      if (detectedType === 'image' || detectedType === 'video') {
+        setOutput(detectedType, makePendingOutput(detectedType))
+      }
+    } catch (e) {
+      setWorkflowError(`Failed to load built-in workflow: ${e}`)
     }
   }, [blockId, parseWorkflow, resetRuntimeFromBlock, setOutput, setWorkflowJson, setWorkflowName])
 
@@ -1898,6 +1938,31 @@ function ComfyGenBlock({
             <span className="text-[11px] text-muted-foreground truncate max-w-[140px]">{workflowName}</span>
           )}
         </div>
+        {builtinWorkflows.length > 0 && (
+          <div className="flex items-center gap-2 pt-1">
+            <span className="text-[10px] text-muted-foreground shrink-0">or use built-in:</span>
+            <Select
+              value=""
+              onValueChange={(v) => {
+                if (v) void handleBuiltinWorkflow(v)
+              }}
+            >
+              <SelectTrigger className="h-7 text-xs flex-1">
+                <SelectValue placeholder="Pick a bundled workflow…" />
+              </SelectTrigger>
+              <SelectContent>
+                {builtinWorkflows.map((w) => (
+                  <SelectItem key={w.filename} value={w.filename} className="text-xs">
+                    {w.filename.replace(/\.json$/, '')}
+                    {w.description && (
+                      <span className="ml-2 text-muted-foreground">— {w.description}</span>
+                    )}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
         {workflowError && (
           <p className="text-[10px] text-red-400">{workflowError}</p>
         )}
