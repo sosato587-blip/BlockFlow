@@ -34,9 +34,23 @@
 - モデル DL（数 GB 単位）
 - 実行して $ が飛ぶものは全部ユーザー確認
 
-## 3. 現在の状態（2026-04-23 時点）
+## 3. 現在の状態（2026-05-01 時点）
 
-### 今朝のセッションでやったこと（main に push 済み）
+### 直近セッション（ブランチ `claude/continue-a4-task-2-sjRcI`、main 未マージ・PR 化予定）
+
+| Commit | 内容 |
+|---|---|
+| `68bab75` `90a7245` `b578746` `5a019a7` `917e830` `8f39ed4` | A4 全 12 タスク（共有 `<InlineLoraPicker>`、`computeInlineLoraOverrides` 集約、mobile state split、wan_i2v dual-pass LoRA、`high_loras`/`low_loras` payload、テスト 27 ケース、HANDOFF 更新） |
+| `f6c170e` | feat(comfy_gen): Negative Prompt トグル（既定 OFF）。`is_negative` フラグで条件分岐、Manual 固定 |
+| `b743302` | feat(catalog): Wan 2.2 Animate 14B + Nova 3DCG XL v9.0 を `KNOWN_CHECKPOINTS` 登録、`COST_RATES` に `wan_animate` / `wan_fun_control` / `ltx_video` 追加（テスト 12 ケース）|
+| `9be0955` → `218306c` | One Piece キャラ LoRA DL 用 `scripts/dl_onepiece_loras.py`（dedup 比較 + 一発 RunPod 投入）。途中で worker 側の civitai DL バグ判明、blocker doc 化 |
+| `fe23625` | docs: civitai DL blocker は `satoso2/comfyui-serverless:v11-curl-wrapper` で解消（ai-creator-stack の curl shim、Hearmeman の Python 無修正）。6/6 LoRA 着地確認済み |
+| _wan_animate scaffolding_ | `custom_blocks/wan_animate/` 新設（canvas JSON asset + 設計 doc + stub backend / frontend block）。catalog の Wan Animate 行を Kijai workflow の filename に合わせて修正、relight LoRA + lightx2v acceleration LoRA を追加登録。詳細: `custom_blocks/wan_animate/WAN_ANIMATE_DESIGN.md` |
+| _wan_animate runtime_ | フル実装。`scripts/convert_canvas_to_api.py`（66 ノード canvas → 33 ノード API 形式の変換器、SetNode/GetNode/Reroute alias 解決 + INPUT_TYPES 自動引き当て） / `custom_blocks/wan_animate/workflow_template.json`（生成済み API テンプレ） / `m_routes.build_wan_animate_workflow`（テンプレ patcher、user 値を well-known node id に注入、デフォルトで relight + lightx2v 加速 LoRA を保持しつつ user LoRA を slot 2 から追加） / `/api/m/wan_animate` dispatcher（image + video の file_inputs） / mobile UI 拡張（`ModelKind` に `wan_animate` 追加、driving video URL 入力欄、length/fps コントロール共有） / desktop ブロック（`wan_fun_control` パターン縮小版で /run + /status、registerExecute + serverless poller 連携）。テスト: 28 ケース pytest（テンプレ整合性 + 全 user-tunable 入力の patch 確認 + LoRA chain + idempotency）。実走未確認（次セッションで `~$0.30` の smoke test 推奨）|
+
+**テスト**: pytest 67/67（`test_lora_mapping`, `test_m_routes_loras`, `test_cost_rates`, `test_wan_animate_workflow`）/ vitest `lora-mapping.test.ts` 13/13。
+
+### 過去（main に push 済み・参考）
 | Commit | 内容 |
 |---|---|
 | `a64ef80` | fix(app): PEP 723 から `comfy-gen` 除去（起動不能バグ修正） |
@@ -48,16 +62,24 @@
 | `e926ca7` | docs(readme): Base Model / LoRA Selector / inline LoRA 追記 |
 
 ### 検収済み（ユーザー確認済み）
-- ミニPC で `git pull origin main` → 衝突なし
-- `uv run app.py` 起動成功
-- ブラウザで動作確認済み
+- ミニPC で A4 動作確認（`/generate` ComfyGen + `/m` どちらも LoRA UI 正常表示、wan_i2v でも picker 出る）
+- One Piece LoRA 6/6 が `/runpod-volume/ComfyUI/models/loras/` に着地（worker v11 シム経由）
 
 ## 4. 残タスク（優先度順）
 
+### ✅ 完了（A4 — 2026-04-25）
+- **A4**: モバイル版 (`/m`) への inline LoRA UI 実装 — **完了**
+  - 共有コンポ `frontend/src/components/lora/InlineLoraPicker.tsx` をデスクトップとモバイル両方で使用
+  - Mobile 送信 payload を `high_loras` / `low_loras` に分割（旧 `loras` は backend で legacy fallback として受理、deprecation log 付き）
+  - `backend/lora_mapping.py` に Python 移植 + 10 ケース pytest
+  - `backend/m_routes.py` の `build_z_image_workflow` / `build_illustrious_workflow` を `high_loras` / `low_loras` 対応にして single-pass merge、`build_wan_i2v_workflow` には dual-pass LoRA 注入を新規追加
+  - 統合テスト 17 ケース追加（`backend/tests/test_m_routes_loras.py`）
+  - 詳細は `docs/handoffs/A4_HANDOFF.md` 参照
+
 ### 🟠 高優先度
-- **A4**: モバイル版 (`/m`) への inline LoRA UI 実装 or 明示的「非対応」表記
 - **B3**: LoRA loader=0 の警告に具体的アクション提案（workflow に `LoraLoaderModelOnly` 追加方法）
 - **A7**: `m/page.tsx` 3600行モノリス分割（`m/sections/base-model.tsx` 等）
+- **S2-Full**: Desktop/Mobile アーキテクチャ完全統一（A4 完了後の長期構想、§ 8 参照）
 
 ### 🟡 中優先度
 - **C3**: `backend/services.py` 分割（`services/lora.py`, `services/runs.py`, `services/runpod.py`）
@@ -74,6 +96,9 @@
 - ダークモード contrast 調整
 - キーボードショートカット（Ctrl+Enter で generate）
 - ドキュメントのスクショ追加
+
+### ✅ Resolved blockers
+- **(2026-05-01) RunPod worker の civitai DL** — `satoso2/comfyui-serverless:v11-curl-wrapper` で解決。ai-creator-stack の `claude/civitai-aria2c-ua-fix` ブランチで `/usr/bin/aria2c` を curl 呼び出しの shim に差し替え（Hearmeman の Python は無修正）。`scripts/dl_onepiece_loras.py --execute` で 6/6 着地確認済み。事後分析は [`docs/runpod_worker_civitai_dl_bug.md`](docs/runpod_worker_civitai_dl_bug.md) に追記。`--source civitai` の missing-script バグは別件として未対応（callers should use `source="url"` を継続）。
 
 ### 💬 ユーザー判断待ち
 - **動画モデル用ブロックの設計**: WAN 2.2 I2V / LTX Video 用 UI を画像ブロックと同じ「1ブロック全部インライン」パターンにするか、専用 high/low 入力の別パターンにするか
@@ -130,6 +155,41 @@ blockflow/
 - 「この関数直して」→ デスクトップ側で Claude Code にやらせる
 - 「コミットして push して」→ デスクトップ側 or ミニPC 側
 - 「RunPod 叩いて画像生成して」→ デスクトップ側（API キー所在）
+
+## 8. S2-Full: Desktop/Mobile アーキテクチャ完全統一
+
+**ステータス:** 🟡 進行中（2026-05-02、フェーズ 1 完了）
+
+**目標:** `/api/m/*` と mobile 専用 workflow builder を退役。すべての mobile 操作を desktop のブロック API 経由で実行する。
+
+**フェーズ 1（完了 — 2026-05-02）: 7 ブロック新設**
+
+7 つの mobile-only flow すべてに desktop block を追加。ブロックは `m_routes.build_*_workflow` をそのまま再利用するシンの薄い wrapper。
+
+| ブロック | slug | input ports | output port | 元の mobile route |
+|---|---|---|---|---|
+| LTX Video | `ltx_video` | image (opt), prompt | video | `/api/m/ltx_video` |
+| CharaIP (IP-Adapter) | `charaip` | reference_image, prompt | image | `/api/m/generate_charaip` |
+| Inpaint | `inpaint` | image, mask, prompt | image | `/api/m/inpaint` |
+| Outpaint | `outpaint` | image, prompt | image | `/api/m/outpaint` |
+| ControlNet (Canny) | `controlnet` | reference_image, prompt | image | `/api/m/generate_controlnet` |
+| ADetailer | `adetailer` | image | image | `/api/m/adetailer` |
+| Character Sheet | `characterSheet` | prompt | image | `/api/m/character_sheet` |
+
+各ブロックは `custom_blocks/<slug>/{backend.block.py, frontend.block.tsx}` の 2 ファイル構成。
+画像 / 動画 input には `<UrlOrFileInput>` を組み込んでおり、URL ペーストかドラッグ&ドロップで `tmpfiles.org` に直接アップロード可能。
+
+**フェーズ 2（残作業）:**
+- mobile UI を `/api/m/*` から `/api/blocks/<slug>/run` に切り替え（payload はほぼ同一なので薄い変換層で済む）
+- 命令型 Python builder を宣言型 JSON テンプレに置換（Wan Animate で確立した canvas → API 変換パターンを横展開）
+- `m_routes.py` 本体を退役（`m_store.py` はプリセット・コスト・Publications・Schedules 用に残す）
+
+**A4 で済ませた前進:**
+- 共有コンポ `<InlineLoraPicker>` を desktop / mobile 両方で利用（UI レイヤは統一済み）
+- payload 形状 (`high_loras` / `low_loras`) を desktop の split UI と揃えた
+- `backend/lora_mapping.py` の Python 実装で 5-case heuristic を共通化
+
+**発動条件:** 同期事故が再発したら見直す。
 
 ---
 

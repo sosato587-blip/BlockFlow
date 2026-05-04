@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '\n🔴 BlockFlow Pre-Task Charter applies to this session.\n   Before any non-trivial edit:\n   1. Read CLAUDE.md (top: Pre-Task Charter)\n   2. Read docs/SUBSYSTEMS.md (relevant section)\n   3. Skim docs/decisions/ for related ADRs\n   4. State your understanding back to the user\n   5. Wait for go before mutating state\n   The user has paid for the cost of skipping this. Do not skip it.\n'"
+          }
+        ]
+      }
+    ]
+  }
+}

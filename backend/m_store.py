@@ -131,8 +131,13 @@ def delete_preset(preset_id: str) -> bool:
 # Cost tracking
 # ============================================================
 
+_VIDEO_MODELS = frozenset({"wan_i2v", "wan_animate", "wan_fun_control", "ltx_video"})
+
+
 # Rough cost estimates per generation (USD, RunPod A100 Serverless).
 # Calibrated from user's observed ~$0.04 per 1080x1920 Z-Image at 8 steps.
+# Video rates use a ``base + per_second`` model — ``base`` covers the cold
+# start + once-per-clip overhead, ``per_second`` scales with output duration.
 COST_RATES = {
     "z_image": {
         "base": 0.012,              # fixed overhead
@@ -144,7 +149,24 @@ COST_RATES = {
     },
     "wan_i2v": {
         "base": 0.30,               # video base cost much higher
-        "per_second": 0.015,        # plus per output-second cost
+        "per_second": 0.015,        # plus per output-second cost (dual-pass 14B)
+    },
+    "wan_animate": {
+        # Single-pass 14B (vs. wan_i2v's high+low dual pass) -> roughly half
+        # the GPU time. Reference-video preprocessing adds a small overhead
+        # that's absorbed into ``base``.
+        "base": 0.18,
+        "per_second": 0.009,
+    },
+    "wan_fun_control": {
+        # Dual-pass 14B with DWPreprocessor (anime mode) -> similar to wan_i2v.
+        "base": 0.30,
+        "per_second": 0.015,
+    },
+    "ltx_video": {
+        # 2B model, ~30 steps. Empirical: $0.05-$0.08 per 97f / 768x512 clip.
+        "base": 0.04,
+        "per_second": 0.005,
     },
 }
 
@@ -157,7 +179,7 @@ def estimate_cost(
     rates = COST_RATES.get(model)
     if not rates:
         return 0.04  # fallback guess
-    if model == "wan_i2v":
+    if model in _VIDEO_MODELS:
         seconds = max(1.0, (length or 33) / max(1, fps or 16))
         return rates["base"] + seconds * rates["per_second"]
     mp = max(0.1, (width or 1024) * (height or 1024) / 1_000_000.0)

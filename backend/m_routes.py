@@ -12,7 +12,10 @@ and independent of the block-based pipeline.
 
 from __future__ import annotations
 
+import copy
+import json
 import time
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Request
@@ -36,6 +39,37 @@ NEGATIVE_DEFAULT = (
 )
 
 
+def _split_loras_from_payload(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Normalize LoRA fields from a request payload into (high, low) lists.
+
+    The mobile client (post-A4) sends ``high_loras`` / ``low_loras``. Older
+    clients still send a flat ``loras`` field; we route those entries to
+    the high branch and emit a one-line deprecation warning so the legacy
+    callers can be tracked down.
+
+    A caller that explicitly passes ``high_loras=[]`` or ``low_loras=[]``
+    is considered to be on the new shape — the legacy ``loras`` fallback
+    only kicks in when BOTH new fields are entirely absent.
+    """
+    high_raw = payload.get("high_loras")
+    low_raw = payload.get("low_loras")
+    high = list(high_raw) if high_raw is not None else []
+    low = list(low_raw) if low_raw is not None else []
+    if high_raw is None and low_raw is None:
+        legacy = payload.get("loras") or []
+        if legacy:
+            print(
+                "[m/loras] DEPRECATED: payload uses flat 'loras=[...]'; "
+                "switch to 'high_loras' / 'low_loras'. Routing legacy "
+                "entries to high_loras.",
+                flush=True,
+            )
+            high = list(legacy)
+    return high, low
+
+
 def build_z_image_workflow(
     prompt: str,
     width: int = 1080,
@@ -44,13 +78,29 @@ def build_z_image_workflow(
     cfg: float = 1.0,
     seed: int | None = None,
     loras: list[dict[str, Any]] | None = None,
+    high_loras: list[dict[str, Any]] | None = None,
+    low_loras: list[dict[str, Any]] | None = None,
     sampler_name: str = "euler",
     scheduler: str = "simple",
     negative: str = "",
 ) -> dict[str, Any]:
-    """Z-Image Turbo workflow (CLIPLoader + qwen_3_4b + ae VAE)."""
+    """Z-Image Turbo workflow (CLIPLoader + qwen_3_4b + ae VAE).
+
+    LoRAs may be supplied in either of two shapes:
+      * ``high_loras=[...], low_loras=[...]`` — preferred (matches the
+        desktop/mobile split UI). Z-Image is single-pass, so the two
+        branches are concatenated (high → low) into one chain.
+      * ``loras=[...]`` — legacy flat list. Used only when both new
+        params are ``None``.
+    """
     if seed is None:
         seed = int(time.time() * 1000) % (2**31)
+
+    # Resolve the effective single-pass chain. When new-shape inputs are
+    # present (even if empty lists), they take precedence over legacy
+    # ``loras``; the legacy field only acts as a fallback.
+    if high_loras is not None or low_loras is not None:
+        loras = list(high_loras or []) + list(low_loras or [])
 
     wf: dict[str, Any] = {
         "1": {
@@ -622,8 +672,20 @@ def build_wan_i2v_workflow(
     shift: float = 8.0,
     seed: int | None = None,
     negative: str = "static, no movement, blurry, distorted, bad quality, morphing, deformed",
+    high_loras: list[dict[str, Any]] | None = None,
+    low_loras: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Wan 2.2 I2V workflow (high_noise + low_noise 2-pass with ModelSamplingSD3).
+
+    Wan 2.2 is a true dual-expert model: one UNet handles the high-noise
+    early-steps pass, a separate UNet handles the low-noise late-steps
+    pass. ``high_loras`` and ``low_loras`` are injected as independent
+    ``LoraLoaderModelOnly`` chains between each ``UNETLoader`` and the
+    corresponding ``ModelSamplingSD3`` node, mirroring the dual-pass
+    structure. ``LoraLoaderModelOnly`` is used (rather than ``LoraLoader``)
+    because the workflow's text encoder is a separate ``CLIPLoader``,
+    not a checkpoint-bundled CLIP — there is no clip output to thread
+    through.
 
     NOTE: Requires file_inputs to be passed alongside this workflow so the
     handler can download the input image into image_filename before execution.
@@ -631,7 +693,7 @@ def build_wan_i2v_workflow(
     if seed is None:
         seed = int(time.time() * 1000) % (2**31)
 
-    return {
+    wf: dict[str, Any] = {
         # --- Model loaders ---
         "37": {
             "class_type": "UNETLoader",
@@ -750,6 +812,203 @@ def build_wan_i2v_workflow(
         },
     }
 
+    # Dual-pass LoRA injection. high_loras chain sits between UNETLoader "37"
+    # and ModelSamplingSD3 "54"; low_loras chain sits between UNETLoader "56"
+    # and ModelSamplingSD3 "55". Node ids "370<i>" / "560<i>" are picked to
+    # avoid collisions with the existing literals (37, 56, 50, 52, 54-58, 6-9).
+    # ``_meta.title`` is included so a desktop ComfyGen block re-loading the
+    # exported JSON can run the labeled-loader heuristic in lora-mapping.ts.
+    def _inject_chain(
+        wf_dict: dict[str, Any],
+        picks: list[dict[str, Any]] | None,
+        loader_id: str,
+        sampling_id: str,
+        id_prefix: str,
+        title: str,
+    ) -> None:
+        if not picks:
+            return
+        prev = loader_id
+        for i, lora in enumerate(picks):
+            nid = f"{id_prefix}{i}"
+            wf_dict[nid] = {
+                "class_type": "LoraLoaderModelOnly",
+                "inputs": {
+                    "model": [prev, 0],
+                    "lora_name": str(lora.get("name")),
+                    "strength_model": float(lora.get("strength", 1.0)),
+                },
+                "_meta": {"title": title},
+            }
+            prev = nid
+        wf_dict[sampling_id]["inputs"]["model"] = [prev, 0]
+
+    _inject_chain(wf, high_loras, "37", "54", "370", "High Noise LoRA")
+    _inject_chain(wf, low_loras, "56", "55", "560", "Low Noise LoRA")
+
+    return wf
+
+
+# ============================================================
+# Wan 2.2 Animate (Kijai WanVideoWrapper flavor)
+# ============================================================
+
+WAN_ANIMATE_TEMPLATE_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "custom_blocks"
+    / "wan_animate"
+    / "workflow_template.json"
+)
+
+# Default negative prompt used by the Kijai example workflow. Chinese
+# "ugly list" — most users don't override this.
+WAN_ANIMATE_NEGATIVE_DEFAULT = (
+    "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，"
+    "静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，"
+    "多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，"
+    "形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，"
+    "背景人很多，倒着走"
+)
+
+# Well-known node IDs in workflow_template.json that the patcher writes
+# into. Pinned here so a future template regeneration that shifts ids
+# trips the pytest fixtures rather than silently mis-patching at runtime.
+_WAN_ANIMATE_NODE_IDS = {
+    "model_loader":       "22",   # WanVideoModelLoader
+    "sampler":            "27",   # WanVideoSampler
+    "decode":             "28",   # WanVideoDecode
+    "vae_loader":         "38",   # WanVideoVAELoader
+    "ref_image":          "57",   # LoadImage (reference still)
+    "animate_embeds":     "62",   # WanVideoAnimateEmbeds
+    "driving_video":      "63",   # VHS_LoadVideo (motion driver)
+    "text_encode":        "65",   # WanVideoTextEncodeCached
+    "clip_vision_loader": "71",   # CLIPVisionLoader
+    "context_options":    "110",  # WanVideoContextOptions
+    "video_combine_main": "30",   # VHS_VideoCombine (audio-muxed final)
+    "lora_select":        "171",  # WanVideoLoraSelectMulti
+}
+
+
+def _load_wan_animate_template() -> dict[str, Any]:
+    """Load the API-format Wan Animate template, deep-copied so callers can mutate."""
+    raw = WAN_ANIMATE_TEMPLATE_PATH.read_text(encoding="utf-8")
+    return json.loads(raw)
+
+
+def build_wan_animate_workflow(
+    prompt: str,
+    image_filename: str,
+    video_filename: str,
+    width: int = 832,
+    height: int = 480,
+    num_frames: int = 81,
+    fps: int = 16,
+    steps: int = 6,
+    cfg: float = 5.0,
+    shift: float = 1.0,
+    seed: int | None = None,
+    scheduler: str = "dpm++_sde",
+    negative: str | None = None,
+    pose_strength: float = 1.0,
+    face_strength: float = 1.0,
+    colormatch: str = "disabled",
+    frame_window_size: int = 77,
+    denoise_strength: float = 1.0,
+    high_loras: list[dict[str, Any]] | None = None,
+    low_loras: list[dict[str, Any]] | None = None,
+    keep_default_acceleration_loras: bool = True,
+    filename_prefix: str = "WanAnimate",
+) -> dict[str, Any]:
+    """Build a Wan 2.2 Animate (Kijai) API workflow patched with user values.
+
+    The Kijai canvas has been pre-converted to API format and shipped as
+    ``custom_blocks/wan_animate/workflow_template.json`` (33 active nodes,
+    SAM 2 mask + face crop chain + BlockSwap + ContextOptions all
+    preserved). This function deep-copies the template and overrides the
+    well-known nodes listed in ``_WAN_ANIMATE_NODE_IDS``.
+
+    LoRA handling:
+      The template's ``WanVideoLoraSelectMulti`` (node 171) ships with
+      slots 0-1 filled by the recommended ``WanAnimate_relight`` LoRA
+      (strength 1.0) and the ``lightx2v`` speed-distillation LoRA
+      (strength 1.2). Slots 2-4 are empty. User-supplied ``high_loras``
+      / ``low_loras`` (Wan Animate is single-pass — they're concatenated)
+      go into slots 2 onwards. Pass
+      ``keep_default_acceleration_loras=False`` to wipe the defaults
+      first; in that case ``steps`` should be raised to ~25-30.
+    """
+    if seed is None:
+        seed = int(time.time() * 1000) % (2**31)
+    neg = negative if negative is not None else WAN_ANIMATE_NEGATIVE_DEFAULT
+
+    wf = _load_wan_animate_template()
+    nid = _WAN_ANIMATE_NODE_IDS
+
+    # --- Reference image + driving video ---
+    wf[nid["ref_image"]]["inputs"]["image"] = image_filename
+    wf[nid["driving_video"]]["inputs"]["video"] = video_filename
+    wf[nid["driving_video"]]["inputs"]["force_rate"] = int(fps)
+
+    # --- Text prompts ---
+    wf[nid["text_encode"]]["inputs"]["positive_prompt"] = prompt
+    wf[nid["text_encode"]]["inputs"]["negative_prompt"] = neg
+
+    # --- Animate embeds (resolution + length) ---
+    embeds = wf[nid["animate_embeds"]]["inputs"]
+    # The canvas wires width/height/num_frames from INTConstant nodes that
+    # we drop during canvas->API conversion, so we have to fill literal
+    # values here.
+    embeds["width"] = int(width)
+    embeds["height"] = int(height)
+    embeds["num_frames"] = int(num_frames)
+    embeds["frame_window_size"] = int(frame_window_size)
+    embeds["pose_strength"] = float(pose_strength)
+    embeds["face_strength"] = float(face_strength)
+    embeds["colormatch"] = str(colormatch)
+    # The driving-video resolution refs (canvas had VHS_LoadVideo's
+    # custom_width/height linked to INTConstants too) — pin them to
+    # match the requested output dimensions.
+    wf[nid["driving_video"]]["inputs"]["custom_width"] = int(width)
+    wf[nid["driving_video"]]["inputs"]["custom_height"] = int(height)
+
+    # --- Sampler (steps / cfg / shift / seed / scheduler) ---
+    sampler = wf[nid["sampler"]]["inputs"]
+    sampler["steps"] = int(steps)
+    sampler["cfg"] = float(cfg)
+    sampler["shift"] = float(shift)
+    sampler["seed"] = int(seed)
+    sampler["scheduler"] = str(scheduler)
+    sampler["denoise_strength"] = float(denoise_strength)
+
+    # --- Output naming ---
+    wf[nid["video_combine_main"]]["inputs"]["filename_prefix"] = filename_prefix
+    wf[nid["video_combine_main"]]["inputs"]["frame_rate"] = int(fps)
+
+    # --- LoRA chain ---
+    lora_inputs = wf[nid["lora_select"]]["inputs"]
+    if not keep_default_acceleration_loras:
+        for i in range(5):
+            lora_inputs[f"lora_{i}"] = "none"
+            lora_inputs[f"strength_{i}"] = 1.0
+
+    # Wan Animate is single-pass; concatenate high/low picks.
+    user_picks: list[dict[str, Any]] = []
+    user_picks.extend(high_loras or [])
+    user_picks.extend(low_loras or [])
+    next_slot = 2 if keep_default_acceleration_loras else 0
+    for pick in user_picks:
+        if next_slot > 4:
+            break  # 5-slot WanVideoLoraSelectMulti — drop overflow
+        name = pick.get("name") or ""
+        if not name or name == "__none__":
+            continue
+        strength = float(pick.get("strength", 1.0))
+        lora_inputs[f"lora_{next_slot}"] = name
+        lora_inputs[f"strength_{next_slot}"] = strength
+        next_slot += 1
+
+    return wf
+
 
 def build_illustrious_workflow(
     prompt: str,
@@ -760,12 +1019,22 @@ def build_illustrious_workflow(
     seed: int | None = None,
     negative: str = NEGATIVE_DEFAULT,
     loras: list[dict[str, Any]] | None = None,
+    high_loras: list[dict[str, Any]] | None = None,
+    low_loras: list[dict[str, Any]] | None = None,
     sampler_name: str = "dpmpp_2m_sde",
     scheduler: str = "karras",
 ) -> dict[str, Any]:
-    """Illustrious XL workflow (SDXL family, CheckpointLoaderSimple)."""
+    """Illustrious XL workflow (SDXL family, CheckpointLoaderSimple).
+
+    See ``build_z_image_workflow`` for the LoRA payload contract; SDXL is
+    likewise single-pass, so the high/low branches are concatenated into
+    one ``LoraLoader`` chain.
+    """
     if seed is None:
         seed = int(time.time() * 1000) % (2**31)
+
+    if high_loras is not None or low_loras is not None:
+        loras = list(high_loras or []) + list(low_loras or [])
 
     wf: dict[str, Any] = {
         "1": {
@@ -1138,7 +1407,7 @@ async def m_generate(request: Request) -> JSONResponse:
     width = int(payload.get("width") or (1080 if model == "z_image" else 1024))
     height = int(payload.get("height") or (1920 if model == "z_image" else 1536))
     seed = payload.get("seed")
-    loras = payload.get("loras") or []
+    high_loras, low_loras = _split_loras_from_payload(payload)
 
     file_inputs: dict[str, Any] = {}
 
@@ -1150,7 +1419,8 @@ async def m_generate(request: Request) -> JSONResponse:
         negative = str(payload.get("negative") or "")
         workflow = build_z_image_workflow(
             prompt=prompt, width=width, height=height,
-            steps=steps, cfg=cfg, seed=seed, loras=loras,
+            steps=steps, cfg=cfg, seed=seed,
+            high_loras=high_loras, low_loras=low_loras,
             sampler_name=sampler_name, scheduler=scheduler, negative=negative,
         )
     elif model == "illustrious":
@@ -1162,7 +1432,8 @@ async def m_generate(request: Request) -> JSONResponse:
         workflow = build_illustrious_workflow(
             prompt=prompt, width=width, height=height,
             steps=steps, cfg=cfg, seed=seed,
-            negative=negative, loras=loras,
+            negative=negative,
+            high_loras=high_loras, low_loras=low_loras,
             sampler_name=sampler_name, scheduler=scheduler,
         )
     elif model == "wan_i2v":
@@ -1185,6 +1456,7 @@ async def m_generate(request: Request) -> JSONResponse:
             prompt=prompt, image_filename=image_filename,
             width=width, height=height, length=length, fps=fps,
             steps=steps, cfg=cfg, seed=seed,
+            high_loras=high_loras, low_loras=low_loras,
         )
         file_inputs = {
             "52": {
@@ -1193,9 +1465,54 @@ async def m_generate(request: Request) -> JSONResponse:
                 "field": "image",
             }
         }
+    elif model == "wan_animate":
+        image_url = str(payload.get("image_url") or "").strip()
+        video_url = str(payload.get("video_url") or "").strip()
+        if not image_url:
+            return JSONResponse(
+                {"ok": False, "error": "image_url (reference image) is required for wan_animate"},
+                status_code=400,
+            )
+        if not video_url:
+            return JSONResponse(
+                {"ok": False, "error": "video_url (driving video) is required for wan_animate"},
+                status_code=400,
+            )
+        # Defaults: 832x480 portrait, ~5-sec clip @ 16 fps, lightx2v 6 steps.
+        width = int(payload.get("width") or 832)
+        height = int(payload.get("height") or 480)
+        num_frames = int(payload.get("length") or payload.get("num_frames") or 81)
+        fps = int(payload.get("fps") or 16)
+        steps = int(payload.get("steps") or 6)
+        cfg = float(payload.get("cfg") or 5.0)
+        shift = float(payload.get("shift") or 1.0)
+        scheduler = str(payload.get("scheduler") or "dpm++_sde")
+        negative = payload.get("negative")  # None -> builder default (Chinese ugly list)
+        # Filenames the worker will download both inputs into.
+        image_filename = "m_wan_animate_ref.png"
+        video_filename = "m_wan_animate_drive.mp4"
+        workflow = build_wan_animate_workflow(
+            prompt=prompt, image_filename=image_filename, video_filename=video_filename,
+            width=width, height=height, num_frames=num_frames, fps=fps,
+            steps=steps, cfg=cfg, shift=shift, seed=seed,
+            scheduler=scheduler, negative=negative,
+            high_loras=high_loras, low_loras=low_loras,
+        )
+        file_inputs = {
+            "57": {
+                "url": image_url,
+                "filename": image_filename,
+                "field": "image",
+            },
+            "63": {
+                "url": video_url,
+                "filename": video_filename,
+                "field": "video",
+            },
+        }
     else:
         return JSONResponse(
-            {"ok": False, "error": f"unsupported model: {model} (use 'z_image', 'illustrious', or 'wan_i2v')"},
+            {"ok": False, "error": f"unsupported model: {model} (use 'z_image', 'illustrious', 'wan_i2v', or 'wan_animate')"},
             status_code=400,
         )
 
@@ -1421,14 +1738,15 @@ async def m_batch_generate(request: Request) -> JSONResponse:
         if seed is None:
             # For batches, vary seed each iteration
             seed = int(time.time() * 1000 + i) % (2**31)
-        loras = params.get("loras") or []
+        high_loras, low_loras = _split_loras_from_payload(params)
 
         if model == "z_image":
             workflow = build_z_image_workflow(
                 prompt=prompt, width=width, height=height,
                 steps=int(params.get("steps") or 8),
                 cfg=float(params.get("cfg") or 1.0),
-                seed=int(seed), loras=loras,
+                seed=int(seed),
+                high_loras=high_loras, low_loras=low_loras,
                 sampler_name=str(params.get("sampler_name") or "euler"),
                 scheduler=str(params.get("scheduler") or "simple"),
                 negative=str(params.get("negative") or ""),
@@ -1440,7 +1758,7 @@ async def m_batch_generate(request: Request) -> JSONResponse:
                 cfg=float(params.get("cfg") or 7.0),
                 seed=int(seed),
                 negative=str(params.get("negative") or NEGATIVE_DEFAULT),
-                loras=loras,
+                high_loras=high_loras, low_loras=low_loras,
                 sampler_name=str(params.get("sampler_name") or "dpmpp_2m_sde"),
                 scheduler=str(params.get("scheduler") or "karras"),
             )
@@ -1621,10 +1939,15 @@ async def m_delete_schedule(sched_id: str) -> JSONResponse:
 
 @router.post("/api/m/upload")
 async def m_upload(request: Request) -> JSONResponse:
-    """Upload a base64-encoded image to tmpfiles.org and return public URL.
+    """Upload a base64-encoded blob to tmpfiles.org and return public URL.
 
     Body: { "data": "data:image/png;base64,iVBOR...", "filename": "mask.png" (optional) }
     Returns: { "ok": true, "url": "https://tmpfiles.org/dl/..." }
+
+    Accepts both images and short videos. tmpfiles.org caps free uploads
+    at ~100 MB and the URL expires after ~1 hour, which is enough for the
+    Wan I2V / Wan Animate driving-video flow (worker pulls the file
+    within 1-3 minutes of submission).
     """
     import traceback
     try:
@@ -1641,8 +1964,14 @@ async def m_upload(request: Request) -> JSONResponse:
         except Exception as e:
             return JSONResponse({"ok": False, "error": f"base64 decode failed: {e}"}, status_code=400)
 
-        if len(blob) < 64 or len(blob) > 20 * 1024 * 1024:
-            return JSONResponse({"ok": False, "error": f"blob size out of range ({len(blob)} bytes)"}, status_code=400)
+        # 100 MB ceiling matches tmpfiles.org's free-tier limit. The
+        # original ceiling was 20 MB (image-only era) — bumped so short
+        # MP4 driving videos (5-10 sec, 720p, ~30-60 MB typical) fit.
+        if len(blob) < 64 or len(blob) > 100 * 1024 * 1024:
+            return JSONResponse(
+                {"ok": False, "error": f"blob size out of range ({len(blob)} bytes; allowed 64 B – 100 MB)"},
+                status_code=400,
+            )
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(filename).suffix or ".png") as tf:
             tf.write(blob)

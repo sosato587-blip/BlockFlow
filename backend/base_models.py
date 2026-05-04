@@ -90,10 +90,34 @@ class CheckpointInfo:
 
 KNOWN_CHECKPOINTS: list[CheckpointInfo] = [
     CheckpointInfo(
-        filename="waiIllustriousSDXL_v160.safetensors",
+        filename="waiIllustriousSDXL_v170.safetensors",
         family="illustrious",
-        label="WAI Illustrious XL v1.6.0",
-        notes="Main anime checkpoint. 6.6GB, SDXL arch.",
+        label="WAI Illustrious XL v1.7.0",
+        notes=(
+            "Main anime checkpoint. 6.6GB, SDXL arch. v17.0 over v16.0: "
+            "background-character color/relevance fixes, smoother coloring, "
+            "and notably better Hires-fix limb correction (arms/legs/hands). "
+            "Lower step count works (recommended 15-30 vs 25-40 in v16), "
+            "so per-image RunPod cost drops. Default character age tends "
+            "younger; for adult-look without a character LoRA, prepend "
+            "(aged up:1.0-2.0) or (mature female:1.0-2.0) to the prompt. "
+            "All Illustrious LoRAs trained against v16 still work unchanged. "
+            "Source: https://civitai.com/models/827184 (modelVersionId=2883731)."
+        ),
+    ),
+    CheckpointInfo(
+        filename="nova3DCGXL_illustriousV90.safetensors",
+        family="illustrious",
+        label="Nova 3DCG XL v9.0",
+        notes=(
+            "3DCG / PVC-figure-style anime checkpoint. ~6.5GB, SDXL arch. "
+            "Built on NoobAI EPS v1.1 + Illustrious v2.0-stable (DARE merge). "
+            "Compatible with Illustrious LoRAs. "
+            "Source: https://civitai.com/models/715287 (modelVersionId=2744564). "
+            "If the downloaded file uses a different filename (civitai keeps "
+            "the uploader's name), rename it to the value above or update "
+            "this row."
+        ),
     ),
     CheckpointInfo(
         filename="z_image_turbo_bf16.safetensors",
@@ -126,6 +150,46 @@ KNOWN_CHECKPOINTS: list[CheckpointInfo] = [
         notes="Low-noise half for pose-controlled video.",
     ),
     CheckpointInfo(
+        filename="Wan2_2-Animate-14B_fp8_e4m3fn_scaled_KJ.safetensors",
+        family="wan_22",
+        label="Wan 2.2 Animate 14B (fp8 KJ)",
+        notes=(
+            "Single-pass character-animation model: reference image + "
+            "driving video -> animated character. ~17 GB. The Kijai "
+            "WanVideoWrapper example workflow expects this exact filename "
+            "(see custom_blocks/wan_animate/WAN_ANIMATE_DESIGN.md for the "
+            "full required-files list and node graph). "
+            "Source: https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled "
+            "(path: WanVideo/2_2/). bf16 alt: wan2.2_animate_14B_bf16.safetensors "
+            "(~28 GB, Comfy-Org/Wan_2.2_ComfyUI_Repackaged) — uses a different, "
+            "simpler workflow (WanAnimateToVideoEnhanced) and is NOT what the "
+            "current scaffolding targets."
+        ),
+    ),
+    CheckpointInfo(
+        filename="WanAnimate_relight_lora_fp16.safetensors",
+        family="wan_22",
+        label="Wan Animate relight LoRA (fp16)",
+        notes=(
+            "Relight LoRA recommended by Kijai's example workflow. "
+            "Default strength 1.0. ~600 MB. "
+            "Source: https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled "
+            "(path: WanVideo/)."
+        ),
+    ),
+    CheckpointInfo(
+        filename="lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+        family="wan_22",
+        label="lightx2v I2V 14B 480p CFG step-distill rank64 (bf16)",
+        notes=(
+            "Speed-distillation LoRA. Lets Wan 2.2 Animate run at "
+            "steps=6 instead of 25-30 with negligible quality loss; "
+            "default strength 1.2. ~1 GB. "
+            "Source: https://huggingface.co/Kijai/WanVideo_comfy_fp8_scaled "
+            "(path: WanVideo/Lightx2v/)."
+        ),
+    ),
+    CheckpointInfo(
         filename="ltx-video-2b-v0.9.5.safetensors",
         family="ltx",
         label="LTX Video 2B v0.9.5",
@@ -149,7 +213,9 @@ def known_checkpoints_by_family() -> dict[str, list[CheckpointInfo]]:
 # Explicit overrides for LoRAs whose filenames lack architecture hints.
 # Key is the lowercased base filename (without directory). Value is a family id.
 # Keep this list short — prefer renaming the LoRA to include an architecture
-# hint when possible. This map exists for historical names we can't rename.
+# hint when possible, or broadening _LORA_PATTERNS below if a pattern is
+# generalisable. This map exists for historical names we can't rename and
+# for one-off filenames the regex would not safely catch.
 _LORA_OVERRIDES: dict[str, str] = {
     # Illustrious NSFW utility/concept LoRAs (used in sexy_12 / nami batches)
     "smooth_detailer_booster.safetensors": "illustrious",
@@ -162,18 +228,52 @@ _LORA_OVERRIDES: dict[str, str] = {
     # Z-Image realistic-style LoRAs
     "nicegirls_ultrareal.safetensors": "z_image",
     "realistic_skin_texture.safetensors": "z_image",
+    # 2026-05-03: One Piece character set whose filenames lack any
+    # architecture marker the regex can grab on to.
+    "boa_hancock.safetensors": "illustrious",
+    "nicorobin_onepiece[nyx].safetensors": "illustrious",
+    "one_piece_manga_style.safetensors": "illustrious",
+    # 2026-05-03: Generic-named Illustrious concept / style / quality LoRAs
+    # that the user confirmed are SDXL Illustrious.
+    "hotspring.safetensors": "illustrious",
+    "kodak film style v1.safetensors": "illustrious",
+    "schoolgirl.safetensors": "illustrious",
+    "smooth_booster_v4.safetensors": "illustrious",
+    "trendcraft_the_peoples_style_detailer-v2.3i-4_15_2025-sdxl.safetensors": "illustrious",
+    "dynamicposeil2att_alpha1.0_rank4_noxattn_900steps.safetensors": "illustrious",
+    # 2026-05-03: Z-Image Turbo LoRAs whose names embed "ZIT" without a
+    # word-boundary the regex can find.
+    "microbikiniv2zitde.safetensors": "z_image",
+    "zitnsfwlora.safetensors": "z_image",
 }
 
 
 # Order matters: more specific patterns first. The first match wins.
-# Each entry: (compiled regex over the lowercased filename, family id)
+# Each entry: (compiled regex over the lowercased filename, family id).
+#
+# 2026-05-03 audit: walked the on-disk LoRA inventory through classify_lora()
+# and found 22/48 unclassified — i.e. invisible in the family-filtered UI.
+# Patterns below were widened to cover the abbreviation forms commonly used
+# in community LoRAs (_ilxl_, _ixl_, IL-NOOB, IL2att, illusXL, ZIT*,
+# WanAnimate / WanRelight / lightx2v). Anything still not caught by these
+# patterns goes into _LORA_OVERRIDES above.
 _LORA_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    # Illustrious-specific hints
-    (re.compile(r"illustrious|illuxl|_il\.|_illu[_\.]"), "illustrious"),
-    # Z-Image hints
-    (re.compile(r"z_image|z-image|zimage|turbo(?!_1\.0_fp16)"), "z_image"),
-    # Wan 2.2 video hints
-    (re.compile(r"wan[_\.]?2\.?2|wan22|wan_i2v|wan_t2v|wan_fun"), "wan_22"),
+    # Illustrious. Catches:
+    #   * the full word "illustrious"
+    #   * the abbreviations "illuxl" and "illusXL" (typo'd by some uploaders)
+    #   * a word-boundary "il" optionally followed by "xl" or a digit, then
+    #     a separator: e.g. _ilxl_v1, _il., -il-20, magical-girl-outfit-il-20
+    #   * a word-boundary "ixl" with separator: e.g. PeronaOnePieceAnime_IXL
+    #   * "il-noob" / "il_noob" — IL-NOOB (NoobAI) based merges
+    (re.compile(r"illustrious|illusxl|illuxl|(?:^|[_\.\- ])il(?:xl|\d)?[_\.\-]|(?:^|[_\.\- ])ixl[_\.\-]|il[_\-]noob"), "illustrious"),
+    # Z-Image. Explicit name forms + ZIT-prefixed variants (ZITnsfwLoRA,
+    # MicroBikiniV2ZiTde) + standalone "turbo" (with a negative lookahead
+    # to exempt the legacy sd_xl_turbo_1.0_fp16 filename).
+    (re.compile(r"z_image|z-image|zimage|zit(?:nsfw|tde|[_\.\-])|turbo(?!_1\.0_fp16)"), "z_image"),
+    # Wan 2.2 video. Catches the version forms plus the Animate / Relight
+    # extras and the lightx2v step-distill accelerator that ships against
+    # the same checkpoints.
+    (re.compile(r"wan[_\.]?2\.?2|wan22|wan_i2v|wan_t2v|wan_fun|wan[_\.\-]?animate|wan[_\.\-]?relight|lightx2v"), "wan_22"),
     # LTX
     (re.compile(r"\bltx\b|ltx[_-]video|ltxv"), "ltx"),
 ]

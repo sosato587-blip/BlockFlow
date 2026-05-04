@@ -90,6 +90,60 @@ class ClassifyLoraTests(unittest.TestCase):
             bm.UNCLASSIFIED,
         )
 
+    def test_illustrious_abbreviations_2026_05_03(self) -> None:
+        # Regression cases from the 2026-05-03 audit: 22/48 LoRAs were
+        # invisible in the family-filtered UI because the pattern only
+        # matched the full word "illustrious" / "illuxl". These are the
+        # abbreviation forms callers in the wild actually use.
+        for name in [
+            "yamato_(one_piece)_ilxl_v1.safetensors",      # _ilxl_ infix
+            "PeronaOnePieceAnime_IXL.safetensors",         # _IXL. suffix
+            "NSFWFilter_illusXL_Incrs_v1.safetensors",     # illusXL typo
+            "anime_screencap-IL-NOOB_v3.safetensors",      # IL-NOOB merge
+            "magical-girl-outfit-il-20.safetensors",       # -il-NN suffix
+            "Washing_Body_in_the_Mirror_IL.safetensors",   # _IL. suffix
+            "kms_in_the_dark_IL.safetensors",              # _IL. suffix
+            "IFL_v1.0_IL.safetensors",                     # mixed case
+        ]:
+            with self.subTest(name=name):
+                self.assertEqual(bm.classify_lora(name), "illustrious")
+
+    def test_wan22_extras_2026_05_03(self) -> None:
+        # Animate / relight / lightx2v all run against the Wan 2.2
+        # checkpoints — must classify under wan_22 so the family-filtered
+        # LoRA dropdown for Wan workflows surfaces them.
+        for name in [
+            "WanAnimate_relight_lora_fp16.safetensors",
+            "Wan-Animate-style.safetensors",
+            "wan_relight_v2.safetensors",
+            "lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+        ]:
+            with self.subTest(name=name):
+                self.assertEqual(bm.classify_lora(name), "wan_22")
+
+    def test_z_image_zit_variants_2026_05_03(self) -> None:
+        # ZIT* names without a clean word boundary the regex can grab.
+        # Confirmed Z-Image Turbo by the user on 2026-05-03.
+        self.assertEqual(
+            bm.classify_lora("ZITnsfwLoRA.safetensors"),
+            "z_image",
+        )
+        self.assertEqual(
+            bm.classify_lora("MicroBikiniV2ZiTde.safetensors"),
+            "z_image",
+        )
+
+    def test_does_not_misclassify_unrelated_il_substring(self) -> None:
+        # "il" mid-word should NOT trigger the illustrious branch — the
+        # broadened regex anchors on a non-letter prefix to avoid this.
+        for name in [
+            "Brazil_landscape.safetensors",   # "il" at mid-word
+            "Genevril_v2.safetensors",        # "il" at mid-word
+            "evil_witch.safetensors",         # "il" at mid-word
+        ]:
+            with self.subTest(name=name):
+                self.assertEqual(bm.classify_lora(name), bm.UNCLASSIFIED)
+
     def test_strips_path_prefix(self) -> None:
         # Classification should look at the base filename only.
         self.assertEqual(

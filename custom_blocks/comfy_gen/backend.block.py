@@ -1103,37 +1103,48 @@ def _detect_text_overrides(workflow: dict[str, Any]) -> list[dict[str, Any]]:
     Walks upstream through wired text inputs recursively to find literal
     text values, even through intermediate nodes like prompt generators.
 
-    Returns a list of {node_id, input_name, current_value, label} for each field.
+    Returns a list of {node_id, input_name, current_value, label,
+    is_negative} for each field. ``is_negative=True`` marks fields whose
+    output feeds a "negative" conditioning input downstream; the frontend
+    hides them behind a toggle (off by default) since most users only want
+    to tweak the positive prompt.
+
+    Two-pass walk so that a literal text node shared between positive and
+    negative branches is tagged ``is_negative=False`` (positive wins).
     """
     overrides: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
 
-    for node_id, node in workflow.items():
-        if not isinstance(node, dict):
-            continue
-        if node.get("class_type") != "CLIPTextEncode":
-            continue
-        if _is_used_as_negative(workflow, node_id):
-            continue
+    for is_negative_pass in (False, True):
+        for node_id, node in workflow.items():
+            if not isinstance(node, dict):
+                continue
+            if node.get("class_type") != "CLIPTextEncode":
+                continue
+            if _is_used_as_negative(workflow, node_id) != is_negative_pass:
+                continue
 
-        title = node.get("_meta", {}).get("title", "")
-        text_input = node.get("inputs", {}).get("text")
+            title = node.get("_meta", {}).get("title", "")
+            text_input = node.get("inputs", {}).get("text")
 
-        if isinstance(text_input, str):
-            # Direct literal text on CLIPTextEncode
-            key = (node_id, "text")
-            if key not in seen:
-                seen.add(key)
-                overrides.append({
-                    "node_id": node_id,
-                    "input_name": "text",
-                    "current_value": text_input,
-                    "label": title or f"Prompt #{node_id}",
-                })
-        elif isinstance(text_input, list) and len(text_input) == 2:
-            # Wired — walk upstream recursively to find literal text
-            upstream = _walk_upstream_text(workflow, node_id, "text", seen)
-            overrides.extend(upstream)
+            if isinstance(text_input, str):
+                # Direct literal text on CLIPTextEncode
+                key = (node_id, "text")
+                if key not in seen:
+                    seen.add(key)
+                    overrides.append({
+                        "node_id": node_id,
+                        "input_name": "text",
+                        "current_value": text_input,
+                        "label": title or f"Prompt #{node_id}",
+                        "is_negative": is_negative_pass,
+                    })
+            elif isinstance(text_input, list) and len(text_input) == 2:
+                # Wired — walk upstream recursively to find literal text
+                upstream = _walk_upstream_text(workflow, node_id, "text", seen)
+                for o in upstream:
+                    o["is_negative"] = is_negative_pass
+                overrides.extend(upstream)
 
     return overrides
 

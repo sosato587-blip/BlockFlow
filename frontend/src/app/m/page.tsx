@@ -42,6 +42,8 @@ import {
   fetchRuns,
   toggleRunFavorite,
 } from '@/lib/api'
+import { InlineLoraPicker, type LoraPick } from '@/components/lora/InlineLoraPicker'
+import { UrlOrFileInput } from '@/components/upload/UrlOrFileInput'
 
 // R2 image type (kept locally to avoid dependency on uncommitted lib changes).
 interface R2Image {
@@ -1081,7 +1083,10 @@ function BatchTab() {
         model: preset.model,
         prompt: preset.prompt,
         negative: preset.negative,
-        loras: preset.loras,
+        // Presets store a flat list; route it onto the High branch so the
+        // backend doesn't trip the legacy-loras deprecation warning.
+        high_loras: preset.loras || [],
+        low_loras: [],
         width: preset.width, height: preset.height,
         steps: preset.steps, cfg: preset.cfg,
         sampler_name: preset.sampler_name,
@@ -1569,7 +1574,7 @@ function SchedulesTab() {
 // Generate Tab — quick image generation (mobile-first form)
 // ============================================================
 
-type ModelKind = 'z_image' | 'illustrious' | 'wan_i2v'
+type ModelKind = 'z_image' | 'illustrious' | 'wan_i2v' | 'wan_animate'
 
 interface InventoryFile {
   filename: string
@@ -1640,6 +1645,11 @@ const PROMPT_PRESETS: Record<ModelKind, { label: string; text: string }[]> = {
     { label: 'Hair wind', text: 'hair flowing in wind, fabric fluttering, looking out at horizon, cinematic, smooth motion' },
     { label: 'Smile blink', text: 'gentle smile, blinking softly, slight head tilt, very subtle motion' },
   ],
+  wan_animate: [
+    { label: 'Dance follow', text: 'character dancing, smooth full-body motion, soft 3D render style, cinematic lighting' },
+    { label: 'Identity-preserving talk', text: 'character speaking, natural lip-sync, expressive face, studio lighting' },
+    { label: 'Anime motion transfer', text: 'anime character performing the driving motion, smooth animation, vibrant colors' },
+  ],
 }
 
 function GenerateTab() {
@@ -1651,10 +1661,16 @@ function GenerateTab() {
   const [job, setJob] = useState<GenJob | null>(null)
   const [polling, setPolling] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [loras, setLoras] = useState<Array<{ id: string; name: string; strength: number }>>([])
+  const [highLoras, setHighLoras] = useState<LoraPick[]>([])
+  const [lowLoras, setLowLoras] = useState<LoraPick[]>([])
   const [loraOptions, setLoraOptions] = useState<string[]>([])
-  // Wan I2V specific
+  // Wan I2V / Wan Animate specific. Both feed into the same imageUrl
+  // state for the reference / start image; Wan Animate also needs a
+  // separate driving video URL. Named ``drivingVideoUrl`` to avoid
+  // colliding with the locally-derived ``videoUrl`` near the bottom of
+  // GenerateTab that points at the JOB OUTPUT's first video URL.
   const [imageUrl, setImageUrl] = useState('')
+  const [drivingVideoUrl, setDrivingVideoUrl] = useState('')
   const [length, setLength] = useState(33)
   const [fps, setFps] = useState(16)
   // Endpoint ID (mirrors PC's Endpoint ID field)
@@ -1823,11 +1839,13 @@ function GenerateTab() {
   // When family changes, drop any selected LoRAs that aren't in the new family's list.
   useEffect(() => {
     const allowed = new Set(filteredLoraOptions)
-    setLoras((prev) => prev.map((l) =>
+    const sweep = (prev: LoraPick[]): LoraPick[] => prev.map((l) =>
       l.name === '__none__' || !l.name || allowed.has(l.name)
         ? l
         : { ...l, name: '__none__' }
-    ))
+    )
+    setHighLoras(sweep)
+    setLowLoras(sweep)
   }, [activeFamily, filteredLoraOptions])
 
   const currentFamilyCheckpoints = useMemo(
@@ -1955,6 +1973,18 @@ function GenerateTab() {
       setCfg(3.5)
       setSamplerName('euler')
       setScheduler('simple')
+    } else if (m === 'wan_animate') {
+      // Kijai Wan Animate single-pass + lightx2v acceleration LoRA.
+      // 6 steps is enough at this configuration; users who disable
+      // the lightx2v default in advanced mode should bump back to 25-30.
+      setWidth(832)
+      setHeight(480)
+      setSteps(6)
+      setCfg(5.0)
+      setSamplerName('dpm++_sde')
+      setScheduler('simple')
+      setLength(81)
+      setFps(16)
     }
   }
 
@@ -2034,6 +2064,20 @@ function GenerateTab() {
       setLooping(false)
       return
     }
+    if (model === 'wan_animate') {
+      if (!imageUrl.trim()) {
+        setError('Reference image URL is required for Wan Animate')
+        loopActiveRef.current = false
+        setLooping(false)
+        return
+      }
+      if (!drivingVideoUrl.trim()) {
+        setError('Driving video URL is required for Wan Animate')
+        loopActiveRef.current = false
+        setLooping(false)
+        return
+      }
+    }
     setError(null)
     setSubmitting(true)
     setJob(null)
@@ -2051,10 +2095,11 @@ function GenerateTab() {
       if (seedMode === 'fixed') {
         body.seed = seedValue
       }
-      if (loras.length > 0 && model !== 'wan_i2v') {
-        body.loras = loras
-          .filter((l) => l.name && l.name !== '__none__')
-          .map((l) => ({ name: l.name, strength: l.strength }))
+      {
+        const cleanPick = (l: LoraPick) => ({ name: l.name, strength: l.strength })
+        const isActive = (l: LoraPick) => Boolean(l.name) && l.name !== '__none__'
+        body.high_loras = highLoras.filter(isActive).map(cleanPick)
+        body.low_loras = lowLoras.filter(isActive).map(cleanPick)
       }
       // Forward-compat: pass selected checkpoint so the backend can override it
       // on workflows that respect a `checkpoint` field. Harmless if ignored.
@@ -2063,6 +2108,13 @@ function GenerateTab() {
         body.image_url = imageUrl.trim()
         body.length = length
         body.fps = fps
+      }
+      if (model === 'wan_animate') {
+        body.image_url = imageUrl.trim()
+        body.video_url = drivingVideoUrl.trim()
+        body.length = length
+        body.fps = fps
+        body.shift = 1.0
       }
 
       // Routing: ControlNet / Chara IP / normal (priority: Chara IP → ControlNet → normal)
@@ -2137,13 +2189,16 @@ function GenerateTab() {
     setScheduler(p.scheduler)
     setSeedMode(p.seed_mode)
     if (p.seed_value != null) setSeedValue(p.seed_value)
-    setLoras(
+    // Presets keep the legacy flat ``loras`` schema; restore them into the
+    // High branch (matches m_routes.py's legacy fallback semantics).
+    setHighLoras(
       (p.loras || []).map((l) => ({
         id: crypto.randomUUID?.() || String(Date.now() + Math.random()),
         name: l.name,
         strength: l.strength,
       }))
     )
+    setLowLoras([])
     setSelectedPresetId(p.id || '')
   }
 
@@ -2165,7 +2220,9 @@ function GenerateTab() {
       model,
       prompt,
       negative: negativePrompt,
-      loras: loras
+      // Persist as flat list (preset schema unchanged); High → Low order on
+      // save mirrors single-pass models' on-the-wire merge.
+      loras: [...highLoras, ...lowLoras]
         .filter((l) => l.name && l.name !== '__none__')
         .map((l) => ({ name: l.name, strength: l.strength })),
       width, height, steps, cfg,
@@ -2222,11 +2279,10 @@ function GenerateTab() {
       if (endpointId.trim()) {
         base.endpoint_id = endpointId.trim()
       }
-      if (loras.length > 0) {
-        base.loras = loras
-          .filter((l) => l.name && l.name !== '__none__')
-          .map((l) => ({ name: l.name, strength: l.strength }))
-      }
+      const cleanPick = (l: LoraPick) => ({ name: l.name, strength: l.strength })
+      const isActive = (l: LoraPick) => Boolean(l.name) && l.name !== '__none__'
+      base.high_loras = highLoras.filter(isActive).map(cleanPick)
+      base.low_loras = lowLoras.filter(isActive).map(cleanPick)
       const variations = Array.from({ length: count }, () => ({}))  // empty = each gets random seed
       const res = await fetch('/api/m/batch', {
         method: 'POST',
@@ -2287,11 +2343,10 @@ function GenerateTab() {
         steps: 20,
       }
       if (endpointId.trim()) body.endpoint_id = endpointId.trim()
-      if (loras.length > 0) {
-        body.loras = loras
-          .filter((l) => l.name && l.name !== '__none__')
-          .map((l) => ({ name: l.name, strength: l.strength }))
-      }
+      const cleanPick = (l: LoraPick) => ({ name: l.name, strength: l.strength })
+      const isActive = (l: LoraPick) => Boolean(l.name) && l.name !== '__none__'
+      body.high_loras = highLoras.filter(isActive).map(cleanPick)
+      body.low_loras = lowLoras.filter(isActive).map(cleanPick)
       const res = await fetch('/api/m/adetailer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2350,7 +2405,7 @@ function GenerateTab() {
   const outputUrl = job?.output?.url ? String(job.output.url) : null
   const outputVideos = (job?.output?.videos as Array<{ url?: string }> | undefined) || []
   const videoUrl = outputVideos.length > 0 ? outputVideos[0].url : null
-  const isVideoOutput = model === 'wan_i2v' || !!videoUrl
+  const isVideoOutput = model === 'wan_i2v' || model === 'wan_animate' || !!videoUrl
   const finalOutputUrl = videoUrl || outputUrl
 
   const selectedPreset = presets.find((p) => p.id === selectedPresetId)
@@ -2479,6 +2534,7 @@ function GenerateTab() {
             <SelectItem value="z_image">Z-Image Turbo (Real, fast)</SelectItem>
             <SelectItem value="illustrious">Illustrious XL (Anime)</SelectItem>
             <SelectItem value="wan_i2v">Wan 2.2 I2V (Image → Video, 5-10 min)</SelectItem>
+            <SelectItem value="wan_animate">Wan 2.2 Animate (Image + Driving Video → Video, 5-10 min)</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -2534,20 +2590,44 @@ function GenerateTab() {
         )}
       </div>
 
-      {/* Image URL input (only for Wan I2V) */}
-      {model === 'wan_i2v' && (
+      {/* Image URL input (Wan I2V + Wan Animate). Accepts either an
+          R2 / external URL or a local file (auto-uploaded to tmpfiles
+          via /api/m/upload). */}
+      {(model === 'wan_i2v' || model === 'wan_animate') && (
         <div className="space-y-1.5">
           <label className="text-xs font-medium text-muted-foreground">
-            Input Image URL <span className="text-orange-400">*</span>
+            {model === 'wan_animate' ? 'Reference Image' : 'Input Image'}
+            <span className="text-orange-400"> *</span>
           </label>
-          <Input
+          <UrlOrFileInput
             value={imageUrl}
-            onChange={(e) => setImageUrl(e.target.value)}
-            placeholder="https://... (R2 or any public image URL)"
-            className="h-9 text-xs font-mono"
+            onChange={setImageUrl}
+            accept="image/*"
+            placeholder="https://... or use Upload"
           />
           <p className="text-[10px] text-muted-foreground">
-            Tip: Generate an image first (Z-Image / Illustrious), then paste its URL here
+            {model === 'wan_animate'
+              ? 'Single still of the character whose identity should be preserved across the driving video.'
+              : 'Tip: Generate an image first (Z-Image / Illustrious) then paste its URL — or just Upload a local file.'}
+          </p>
+        </div>
+      )}
+
+      {/* Driving video (Wan Animate only). */}
+      {model === 'wan_animate' && (
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">
+            Driving Video <span className="text-orange-400">*</span>
+          </label>
+          <UrlOrFileInput
+            value={drivingVideoUrl}
+            onChange={setDrivingVideoUrl}
+            accept="video/*"
+            placeholder="https://... or use Upload (mp4 ≤ 100 MB)"
+          />
+          <p className="text-[10px] text-muted-foreground">
+            The motion / pose / expression timeline to transfer onto the reference. Worker rescales
+            driving frames to match the output dimensions / fps below.
           </p>
         </div>
       )}
@@ -2599,124 +2679,37 @@ function GenerateTab() {
         />
       </div>
 
-      {/* LoRA selector — multi-LoRA (image gen only; Wan I2V skips for now) */}
-      {model !== 'wan_i2v' && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-muted-foreground">
-              LoRAs (optional, {loras.length} added, {filteredLoraOptions.length} available for {activeFamilyLabel})
-            </label>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => void fetchLoras()}
-                disabled={loraLoading}
-                className="text-[10px] px-1.5 py-1 rounded-md border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40"
-                title="Refresh LoRA list"
-              >
-                <RefreshCw className={`w-3 h-3 ${loraLoading ? 'animate-spin' : ''}`} />
-              </button>
-              <button
-                onClick={() =>
-                  setLoras((prev) => [
-                    ...prev,
-                    {
-                      id: crypto.randomUUID?.() || String(Date.now() + Math.random()),
-                      name: '__none__',
-                      strength: 0.8,
-                    },
-                  ])
-                }
-                disabled={loras.length >= 8}
-                className="text-[10px] px-2 py-1 rounded-md border border-orange-500/30 bg-orange-500/10 text-orange-400 hover:bg-orange-500/20 transition-colors disabled:opacity-40"
-              >
-                + Add LoRA
-              </button>
-            </div>
-          </div>
-
-          {loraLoading && (
-            <div className="rounded-md border border-cyan-500/30 bg-cyan-500/10 p-2 text-[10px] text-cyan-300 flex items-center gap-1.5">
-              <Loader2 className="w-3 h-3 animate-spin" />
-              Loading LoRA list... (may take 30-60s on cold start)
-            </div>
-          )}
-
-          {!loraLoading && filteredLoraOptions.length === 0 && (
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[10px] text-amber-400">
-              {loraFetchError || `No LoRAs for ${activeFamilyLabel}.`}
-              <br />
-              <strong>Tip:</strong> Tap the ComfyUI Gen block&apos;s Sync button on PC once to populate the cache — mobile will then load it instantly.
-            </div>
-          )}
-
-          {loras.length === 0 && (
-            <p className="text-[10px] text-muted-foreground italic">
-              No LoRAs selected. Tap &quot;+ Add LoRA&quot; to stack quality boosters, characters, or concepts.
-            </p>
-          )}
-
-          {loras.map((lora, idx) => (
-            <div
-              key={lora.id}
-              className="space-y-1.5 rounded-md border border-border/40 bg-card/30 p-2"
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-mono text-muted-foreground w-5 shrink-0">
-                  {idx + 1}.
-                </span>
-                <Select
-                  value={lora.name}
-                  onValueChange={(v) =>
-                    setLoras((prev) =>
-                      prev.map((l) => (l.id === lora.id ? { ...l, name: v } : l))
-                    )
-                  }
-                >
-                  <SelectTrigger className="flex-1 min-w-0 h-8 text-xs">
-                    <SelectValue placeholder="(select LoRA)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">(none)</SelectItem>
-                    {filteredLoraOptions.map((name) => (
-                      <SelectItem key={name} value={name} className="text-xs">
-                        {name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <button
-                  onClick={() =>
-                    setLoras((prev) => prev.filter((l) => l.id !== lora.id))
-                  }
-                  className="shrink-0 h-7 w-7 rounded-md flex items-center justify-center hover:bg-red-500/20 text-muted-foreground hover:text-red-400 transition-colors"
-                  aria-label="Remove LoRA"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              {lora.name !== '__none__' && (
-                <div className="flex items-center gap-2">
-                  <Slider
-                    value={[lora.strength]}
-                    onValueChange={([v]) =>
-                      setLoras((prev) =>
-                        prev.map((l) => (l.id === lora.id ? { ...l, strength: v } : l))
-                      )
-                    }
-                    min={0}
-                    max={2}
-                    step={0.05}
-                    className="flex-1"
-                  />
-                  <span className="text-[10px] font-mono text-muted-foreground w-10 text-right">
-                    {lora.strength.toFixed(2)}
-                  </span>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      {/* LoRA selector — High / Low split picker. Routes high_loras/low_loras
+          to the dual-pass UNets for wan_i2v, or merges them for single-pass
+          z_image / illustrious. */}
+      <InlineLoraPicker
+        family={activeFamily}
+        familyLabel={activeFamilyLabel}
+        groupedOptions={loraGrouped}
+        highPicks={highLoras}
+        lowPicks={lowLoras}
+        onHighPicksChange={setHighLoras}
+        onLowPicksChange={setLowLoras}
+        accent="orange"
+        isLoading={loraLoading}
+        loadingMessage="Loading LoRA list... (may take 30-60s on cold start)"
+        errorMessage={
+          !loraLoading && filteredLoraOptions.length === 0
+            ? (loraFetchError || `No LoRAs for ${activeFamilyLabel}. Tip: tap Sync on PC's ComfyUI Gen block to populate the cache.`)
+            : undefined
+        }
+        emptyHint='Tap "+ Add High/Low LoRA" to stack quality boosters, characters, or concepts.'
+        headerRightSlot={
+          <button
+            onClick={() => void fetchLoras()}
+            disabled={loraLoading}
+            className="text-[10px] px-1.5 py-1 rounded-md border border-border/40 text-muted-foreground hover:text-foreground disabled:opacity-40"
+            title="Refresh LoRA list"
+          >
+            <RefreshCw className={`w-3 h-3 ${loraLoading ? 'animate-spin' : ''}`} />
+          </button>
+        }
+      />
 
       {/* Dimensions */}
       <div className="grid grid-cols-2 gap-2">
@@ -2747,7 +2740,7 @@ function GenerateTab() {
       </div>
 
       {/* Wan I2V specific: length + fps */}
-      {model === 'wan_i2v' && (
+      {(model === 'wan_i2v' || model === 'wan_animate') && (
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
             <label className="text-[10px] font-medium text-muted-foreground">Frames</label>
@@ -2760,7 +2753,9 @@ function GenerateTab() {
               max={161}
               step={4}
             />
-            <p className="text-[9px] text-muted-foreground">33 frames @ 16fps ≈ 2 sec</p>
+            <p className="text-[9px] text-muted-foreground">
+              {model === 'wan_animate' ? '81 frames @ 16fps ≈ 5 sec' : '33 frames @ 16fps ≈ 2 sec'}
+            </p>
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-medium text-muted-foreground">FPS</label>

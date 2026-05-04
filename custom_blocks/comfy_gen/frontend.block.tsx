@@ -47,6 +47,8 @@ import {
 } from '@/lib/comfygen-overrides'
 import { usePipeline } from '@/lib/pipeline/pipeline-context'
 import { findBlockById, findBlockInTree } from '@/lib/pipeline/tree-utils'
+import { InlineLoraPicker, type LoraPick } from '@/components/lora/InlineLoraPicker'
+import { computeInlineLoraOverrides } from '@/lib/lora-mapping'
 
 const ENDPOINT_KEY = 'comfygen_endpoint_id'
 const RUN_ENDPOINT = '/api/blocks/comfy_gen/run'
@@ -92,6 +94,10 @@ interface TextOverrideInfo {
   current_value: string
   label: string
   field_name?: string
+  /** True when the underlying CLIPTextEncode output feeds a "negative"
+   *  conditioning input downstream. The frontend hides these behind a
+   *  toggle (off by default). */
+  is_negative?: boolean
 }
 
 interface ResolutionNodeInfo {
@@ -461,6 +467,11 @@ function ComfyGenBlock({
   const [ksamplerOverrides, setKsamplerOverrides] = useSessionState<Record<string, KSamplerOverride>>(`block_${blockId}_ksampler_overrides`, {})
   const [textOverrides, setTextOverrides] = useSessionState<TextOverrideInfo[]>(`block_${blockId}_text_overrides`, [])
   const [textValues, setTextValues] = useSessionState<Record<string, string>>(`block_${blockId}_text_values`, {})
+  // Negative-prompt textareas are hidden behind a toggle (default off) since
+  // most users only care about the positive prompt. We keep the underlying
+  // textValues / textUpstreamFlags untouched when toggling — only the
+  // visibility changes.
+  const [showNegativePrompts, setShowNegativePrompts] = useSessionState<boolean>(`block_${blockId}_show_negative_prompts`, false)
   const [resolutionNodes, setResolutionNodes] = useSessionState<ResolutionNodeInfo[]>(`block_${blockId}_resolution_nodes`, [])
   const [resolutionOverrides, setResolutionOverrides] = useSessionState<Record<string, { width: string; height: string }>>(`block_${blockId}_resolution_overrides`, {})
   const [frameCounts, setFrameCounts] = useSessionState<FrameCountInfo[]>(`block_${blockId}_frame_counts`, [])
@@ -524,10 +535,10 @@ function ComfyGenBlock({
   // If external `inputs.base_model` / `inputs.loras` are wired, those win.
   const [inlineFamily, setInlineFamily] = useSessionState<string>(`block_${blockId}_inline_family`, 'illustrious')
   const [inlineCheckpoint, setInlineCheckpoint] = useSessionState<string>(`block_${blockId}_inline_checkpoint`, '')
-  const [inlineHighLoras, setInlineHighLoras] = useSessionState<Array<{ name: string; strength: number }>>(
+  const [inlineHighLoras, setInlineHighLoras] = useSessionState<LoraPick[]>(
     `block_${blockId}_inline_high_loras`, []
   )
-  const [inlineLowLoras, setInlineLowLoras] = useSessionState<Array<{ name: string; strength: number }>>(
+  const [inlineLowLoras, setInlineLowLoras] = useSessionState<LoraPick[]>(
     `block_${blockId}_inline_low_loras`, []
   )
   const [inlineFamilyData, setInlineFamilyData] = useState<Array<{
@@ -965,6 +976,24 @@ function ComfyGenBlock({
 
         const detectedTextOverrides = (data.text_overrides || []) as TextOverrideInfo[]
         setTextOverrides(detectedTextOverrides)
+        // Merge default text values from the workflow's literal current_value
+        // into textValues for any keys the user hasn't typed into yet. This
+        // preserves user edits across page reload while making sure the
+        // workflow's baked-in negative-prompt default actually shows up in
+        // the textarea after a refresh. Without this merge, useSessionState
+        // would restore the previous (possibly empty) textValues on mount
+        // and the reparse here would update textOverrides but never fill
+        // textValues, leaving the negative textarea blank.
+        setTextValues((prev) => {
+          const merged: Record<string, string> = { ...prev }
+          for (const to of detectedTextOverrides) {
+            const k = `${to.node_id}.${to.input_name}`
+            if (!(k in merged) || merged[k] === '') {
+              merged[k] = to.current_value
+            }
+          }
+          return merged
+        })
 
         const detectedResNodes = (data.resolution_nodes || []) as ResolutionNodeInfo[]
         setResolutionNodes(detectedResNodes)
@@ -1200,58 +1229,20 @@ function ComfyGenBlock({
       }
 
       // Plan B inline LoRA injection — only runs if the external `loras` port
-      // is NOT wired. Maps the inline High / Low picks onto the detected LoRA
-      // loader nodes in the workflow. Heuristic (in priority order):
-      //
-      //   1. If there are >=2 LoRA nodes AND labels contain high/low hints,
-      //      split by label and map i-th pick → i-th node within each branch.
-      //   2. If there are exactly 2 LoRA nodes with no usable label hints,
-      //      fall back to node-order: first node = "high", second = "low".
-      //   3. If there's exactly 1 LoRA node, map BOTH inline high+low picks
-      //      to it (ignore the branch distinction — it's not a 2-pass graph).
-      //   4. If there are 0 LoRA nodes but the user set inline LoRAs, we
-      //      can't inject anything; a UI banner (below the inline section)
-      //      warns the user.
+      // is NOT wired. The 5-case heuristic (single loader / labeled hints /
+      // 2-node order fallback / N>2 sequential / empty) lives in
+      // `frontend/src/lib/lora-mapping.ts` and is unit-tested there.
       const externalLoras = freshInputs.loras as Array<{ name: string; branch?: string; strength: number }> | undefined
       if (!externalLoras || !Array.isArray(externalLoras) || externalLoras.length === 0) {
         const activeInlineHigh = inlineHighLoras.filter((l) => l.name && l.name !== '__none__')
         const activeInlineLow = inlineLowLoras.filter((l) => l.name && l.name !== '__none__')
-        if ((activeInlineHigh.length > 0 || activeInlineLow.length > 0) && loraNodes.length > 0) {
-          const applyPicks = (picks: Array<{ name: string; strength: number }>, nodes: typeof loraNodes) => {
-            picks.forEach((pick, idx) => {
-              const node = nodes[idx]
-              if (!node) return
-              const nameKey = `${node.node_id}.lora_name`
-              const smKey = `${node.node_id}.strength_model`
-              const scKey = `${node.node_id}.strength_clip`
-              if (baseOverrides[nameKey] === undefined) baseOverrides[nameKey] = pick.name
-              if (baseOverrides[smKey] === undefined) baseOverrides[smKey] = String(pick.strength)
-              if (baseOverrides[scKey] === undefined) baseOverrides[scKey] = String(pick.strength)
-            })
-          }
-
-          if (loraNodes.length === 1) {
-            // Case 3: single loader — merge both branches and feed all picks.
-            applyPicks([...activeInlineHigh, ...activeInlineLow], loraNodes)
-          } else {
-            const highNodes = loraNodes.filter((ln) => /high/i.test(ln.label || ''))
-            const lowNodes = loraNodes.filter((ln) => /low/i.test(ln.label || ''))
-            if (highNodes.length > 0 || lowNodes.length > 0) {
-              // Case 1: labels usable. If one branch matched but the other
-              // didn't, remaining picks still land on any leftover nodes
-              // (ordered).
-              applyPicks(activeInlineHigh, highNodes.length > 0 ? highNodes : loraNodes)
-              applyPicks(activeInlineLow, lowNodes)
-            } else if (loraNodes.length === 2) {
-              // Case 2: two nodes, no label hints — assume [high, low] by order.
-              applyPicks(activeInlineHigh, [loraNodes[0]])
-              applyPicks(activeInlineLow, [loraNodes[1]])
-            } else {
-              // Fallback: no label hints, N>2 loaders — feed all picks sequentially.
-              applyPicks([...activeInlineHigh, ...activeInlineLow], loraNodes)
-            }
-          }
-        }
+        const inlineOverrides = computeInlineLoraOverrides({
+          loraNodes,
+          inlineHigh: activeInlineHigh,
+          inlineLow: activeInlineLow,
+          existingOverrides: baseOverrides,
+        })
+        Object.assign(baseOverrides, inlineOverrides)
       }
 
       // --- BATCH PATH ---
@@ -1267,7 +1258,7 @@ function ComfyGenBlock({
       if (upstreamPrompts.length > 1) {
         // Find the text override key that's bound to upstream
         // Add a single prompt axis — all upstream-bound text fields will receive the same prompt per combo
-        const upstreamKeys = textOverrides.filter((to) => textUpstreamFlags[`${to.node_id}.${to.input_name}`])
+        const upstreamKeys = textOverrides.filter((to) => !to.is_negative && textUpstreamFlags[`${to.node_id}.${to.input_name}`])
         if (upstreamKeys.length > 0) {
           // Use a synthetic key; the batch executor will fan out to all upstream text fields
           axes.push({ key: '__upstream_prompt__', values: upstreamPrompts, label: 'prompt' })
@@ -1342,6 +1333,9 @@ function ComfyGenBlock({
               const promptVal = merged.__upstream_prompt__
               delete merged.__upstream_prompt__
               for (const to of textOverrides) {
+                // Skip negative branches — upstream pipeline prompts only
+                // make sense for positive conditioning.
+                if (to.is_negative) continue
                 if (textUpstreamFlags[`${to.node_id}.${to.input_name}`]) {
                   merged[`${to.node_id}.${to.input_name}`] = promptVal
                 }
@@ -1540,13 +1534,60 @@ function ComfyGenBlock({
     })
   })
 
-  // Group text overrides by their label (node title) for collapsible sections
-  const textOverrideGroups = textOverrides.reduce<Record<string, TextOverrideInfo[]>>((acc, to) => {
-    const groupKey = to.label
-    if (!acc[groupKey]) acc[groupKey] = []
-    acc[groupKey].push(to)
-    return acc
-  }, {})
+  // ADR 0002 (always-on prompt fields): the Prompt UI renders one positive
+  // textarea and one negative textarea unconditionally, regardless of how
+  // many `CLIPTextEncode` nodes the workflow parser detected. Detection is
+  // used to *populate* those slots; it does not gate them.
+  //
+  //   * `primaryPositive` = first non-negative detected text override, if any
+  //   * `primaryNegative` = first negative detected text override, if any
+  //   * `extraTextOverrides` = anything else (3rd+ prompt for 2-pass /
+  //     prompt-traveling workflows). Surfaced in an "Advanced — per-node
+  //     prompts" collapsible.
+  //
+  // When detection returns 0 entries, we synthesise placeholder slots so
+  // the textareas still render. Their textValues persist across reloads
+  // under synthetic keys; at submit time they have no real node id to
+  // inject into and are silently dropped by `buildOverrides` (which only
+  // iterates real `textOverrides`). The "Workflow has no text input"
+  // banner below makes that drop visible to the user.
+  const primaryPositive: TextOverrideInfo | null =
+    textOverrides.find((to) => !to.is_negative) ?? null
+  const primaryNegative: TextOverrideInfo | null =
+    textOverrides.find((to) => to.is_negative) ?? null
+  const extraTextOverrides: TextOverrideInfo[] = textOverrides.filter(
+    (to) => to !== primaryPositive && to !== primaryNegative,
+  )
+  const positiveKey: string = primaryPositive
+    ? `${primaryPositive.node_id}.${primaryPositive.input_name}`
+    : '__synthetic_positive__.text'
+  const negativeKey: string = primaryNegative
+    ? `${primaryNegative.node_id}.${primaryNegative.input_name}`
+    : '__synthetic_negative__.text'
+  const positiveSlot: TextOverrideInfo = primaryPositive ?? {
+    node_id: '__synthetic_positive__',
+    input_name: 'text',
+    current_value: '',
+    label: 'Prompt',
+    is_negative: false,
+  }
+  const negativeSlot: TextOverrideInfo = primaryNegative ?? {
+    node_id: '__synthetic_negative__',
+    input_name: 'text',
+    current_value: '',
+    label: 'Negative Prompt',
+    is_negative: true,
+  }
+  const promptDetectionGap: boolean =
+    Boolean(workflowJson.trim()) && textOverrides.length === 0
+  // Backwards-compat alias: the old `showNegativePrompts` session state
+  // key is now repurposed as "show advanced (per-node) prompts" — same
+  // boolean, same storage key, just relabelled in the UI. Existing
+  // sessions that had the toggle ON (i.e. previously displayed negative
+  // prompts) will land on "Advanced expanded by default", which is a
+  // reasonable continuity of intent.
+  const showAdvancedPrompts: boolean = showNegativePrompts
+  const setShowAdvancedPrompts: (v: boolean) => void = setShowNegativePrompts
 
   return (
     <div className="space-y-3">
@@ -1797,76 +1838,16 @@ function ComfyGenBlock({
                 Add a LoraLoader node to the workflow, or clear the picks below.
               </p>
             )}
-            {(['high', 'low'] as const).map((branch) => {
-              const picks = branch === 'high' ? inlineHighLoras : inlineLowLoras
-              const setPicks = branch === 'high' ? setInlineHighLoras : setInlineLowLoras
-              const options = (branch === 'high' ? inlineLoraData.grouped_high : inlineLoraData.grouped_low)[inlineFamily] || []
-              return (
-                <div key={branch} className="space-y-1.5">
-                  <Label className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                    {branch === 'high' ? 'High Noise' : 'Low Noise'}
-                  </Label>
-                  {picks.map((entry, i) => (
-                    <div key={i} className="space-y-1 rounded-md border border-border/50 p-1.5">
-                      <div className="flex items-center gap-1.5">
-                        <Select
-                          value={entry.name || '__none__'}
-                          onValueChange={(v) => {
-                            const next = [...picks]
-                            next[i] = { ...entry, name: v }
-                            setPicks(next)
-                          }}
-                        >
-                          <SelectTrigger className="flex-1 h-7 text-xs">
-                            <SelectValue placeholder="(none)" />
-                          </SelectTrigger>
-                          <SelectContent className="max-h-[280px]">
-                            <SelectItem value="__none__" className="text-xs">(none)</SelectItem>
-                            {options.map((name) => (
-                              <SelectItem key={name} value={name} className="text-xs">{name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => setPicks(picks.filter((_, idx) => idx !== i))}
-                          className="shrink-0 h-6 w-6"
-                          aria-label="Remove LoRA"
-                        >
-                          <svg className="w-3 h-3" viewBox="0 0 12 12"><path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.5" fill="none" /></svg>
-                        </Button>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Slider
-                          value={[entry.strength]}
-                          onValueChange={([v]) => {
-                            const next = [...picks]
-                            next[i] = { ...entry, strength: v }
-                            setPicks(next)
-                          }}
-                          min={0}
-                          max={2}
-                          step={0.05}
-                          className="flex-1"
-                        />
-                        <span className="text-[10px] text-muted-foreground w-8 text-right tabular-nums shrink-0">
-                          {entry.strength.toFixed(2)}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPicks([...picks, { name: '__none__', strength: 1.0 }])}
-                    className="text-[11px] h-6"
-                  >
-                    + Add {branch === 'high' ? 'High' : 'Low'} LoRA
-                  </Button>
-                </div>
-              )
-            })}
+            <InlineLoraPicker
+              family={inlineFamily}
+              familyLabel={inlineCurrentFamily?.label}
+              groupedOptions={inlineLoraData}
+              highPicks={inlineHighLoras}
+              lowPicks={inlineLowLoras}
+              onHighPicksChange={setInlineHighLoras}
+              onLowPicksChange={setInlineLowLoras}
+              compact
+            />
           </div>
         )}
       </CollapsibleSection>
@@ -2161,10 +2142,36 @@ function ComfyGenBlock({
           per-node advanced control again, restore from commit before this. */}
 
       {/* Text overrides — grouped by node label */}
-      {Object.entries(textOverrideGroups).map(([groupLabel, items]) => {
-        const renderTextField = (to: TextOverrideInfo, showLabel: boolean) => {
-          const key = `${to.node_id}.${to.input_name}`
-          const usesUpstream = Boolean(textUpstreamFlags[key])
+      {/* Prompt UI — ADR 0002 (always-on prompt fields).
+          The two textareas below render unconditionally. If the parsed
+          workflow exposed positive / negative CLIPTextEncode nodes, the
+          textareas are wired to those node ids and feed the existing
+          `buildOverrides` injection path. If detection returned nothing
+          for one or both branches, the textareas use synthetic keys
+          which are persisted under `textValues` for session continuity
+          but get dropped at submit time (see the
+          `promptDetectionGap` banner that warns the user). */}
+      {promptDetectionGap && (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+          <span className="font-medium">No text input detected in this workflow.</span>{' '}
+          You can still type below for the next workflow you load — but the
+          current workflow has no <code className="rounded bg-muted px-1 py-0.5 text-[10px]">CLIPTextEncode</code>
+          node, so prompts will not be applied for runs against it.
+        </div>
+      )}
+      {(() => {
+        const renderTextField = (
+          to: TextOverrideInfo,
+          key: string,
+          opts: { showLabel: boolean; synthetic: boolean },
+        ) => {
+          const { showLabel, synthetic } = opts
+          // Negative prompts are always Manual — wiring an upstream prompt
+          // into a negative branch makes no sense in practice. Synthetic
+          // slots also can't carry an upstream binding because they have
+          // no node id to target.
+          const allowUpstream = hasUpstreamPrompt && !to.is_negative && !synthetic
+          const usesUpstream = allowUpstream && Boolean(textUpstreamFlags[key])
           return (
             <div key={key} className="space-y-1">
               <div className="flex items-center justify-between">
@@ -2175,8 +2182,16 @@ function ComfyGenBlock({
                       {to.field_name}
                     </span>
                   )}
+                  {to.is_negative && (
+                    <span className="ml-1.5 text-[10px] text-amber-400 font-normal">(negative)</span>
+                  )}
+                  {synthetic && !promptDetectionGap && (
+                    <span className="ml-1.5 text-[10px] text-muted-foreground/70 font-normal">
+                      (no matching node — typed text won&apos;t apply to current workflow)
+                    </span>
+                  )}
                 </Label>
-                {hasUpstreamPrompt && (
+                {allowUpstream && (
                   <Select
                     value={usesUpstream ? '__upstream__' : MANUAL_SOURCE}
                     onValueChange={(v) => setTextUpstreamFlags((prev) => ({ ...prev, [key]: v === '__upstream__' }))}
@@ -2214,7 +2229,11 @@ function ComfyGenBlock({
                   <Textarea
                     value={textValues[key] ?? ''}
                     onChange={(e) => setTextValues((prev) => ({ ...prev, [key]: e.target.value }))}
-                    placeholder={to.current_value ? undefined : 'Enter text...'}
+                    placeholder={
+                      to.current_value
+                        ? undefined
+                        : (to.is_negative ? 'Negative prompt (optional)…' : 'Enter your prompt…')
+                    }
                     className="min-h-[60px] max-h-[120px] text-xs resize-y overflow-y-auto"
                   />
                   {/* Extra prompt textareas in automation mode */}
@@ -2255,20 +2274,53 @@ function ComfyGenBlock({
           )
         }
 
-        if (items.length === 1) {
-          return renderTextField(items[0], true)
-        }
-
         return (
-          <CollapsibleSection
-            key={groupLabel}
-            label={groupLabel}
-            badge={`${items.length} fields`}
-          >
-            {items.map((to) => renderTextField(to, false))}
-          </CollapsibleSection>
+          <>
+            {/* Always-on positive prompt textarea. */}
+            {renderTextField(positiveSlot, positiveKey, {
+              showLabel: true,
+              synthetic: !primaryPositive,
+            })}
+            {/* Always-on negative prompt textarea. */}
+            {renderTextField(negativeSlot, negativeKey, {
+              showLabel: true,
+              synthetic: !primaryNegative,
+            })}
+            {/* Advanced: per-node prompts for 2-pass / prompt-traveling
+                workflows (3rd+ detected text overrides). The same boolean
+                that used to gate "Show negative prompts" now gates this
+                section — same session-state key, just relabelled. */}
+            {extraTextOverrides.length > 0 && (
+              <>
+                <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showAdvancedPrompts}
+                    onChange={(e) => setShowAdvancedPrompts(e.target.checked)}
+                    className="h-3 w-3 accent-amber-500"
+                  />
+                  Show advanced per-node prompts ({extraTextOverrides.length} extra
+                  {extraTextOverrides.length === 1 ? ' field' : ' fields'})
+                </label>
+                {showAdvancedPrompts && (
+                  <CollapsibleSection
+                    label="Per-node prompts"
+                    badge={`${extraTextOverrides.length} field${extraTextOverrides.length === 1 ? '' : 's'}`}
+                  >
+                    {extraTextOverrides.map((to) =>
+                      renderTextField(
+                        to,
+                        `${to.node_id}.${to.input_name}`,
+                        { showLabel: true, synthetic: false },
+                      ),
+                    )}
+                  </CollapsibleSection>
+                )}
+              </>
+            )}
+          </>
         )
-      })}
+      })()}
 
       {/* Batch confirmation dialog */}
       <Dialog open={showBatchConfirm !== null} onOpenChange={(open) => {
